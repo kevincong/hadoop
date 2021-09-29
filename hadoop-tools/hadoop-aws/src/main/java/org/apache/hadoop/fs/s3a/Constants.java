@@ -553,4 +553,236 @@ public final class Constants {
    */
   public static final boolean ETAG_CHECKSUM_ENABLED_DEFAULT = false;
 
+  /**
+   * Where to get the value to use in change detection.  E.g. eTag, or
+   * versionId?
+   */
+  public static final String CHANGE_DETECT_SOURCE
+      = "fs.s3a.change.detection.source";
+
+  /**
+   * eTag as the change detection mechanism.
+   */
+  public static final String CHANGE_DETECT_SOURCE_ETAG = "etag";
+
+  /**
+   * Object versionId as the change detection mechanism.
+   */
+  public static final String CHANGE_DETECT_SOURCE_VERSION_ID = "versionid";
+
+  /**
+   * Default change detection mechanism: eTag.
+   */
+  public static final String CHANGE_DETECT_SOURCE_DEFAULT =
+      CHANGE_DETECT_SOURCE_ETAG;
+
+  /**
+   * Mode to run change detection in.  Server side comparison?  Client side
+   * comparison? Client side compare and warn rather than exception?  Don't
+   * bother at all?
+   */
+  public static final String CHANGE_DETECT_MODE =
+      "fs.s3a.change.detection.mode";
+
+  /**
+   * Change is detected on the client side by comparing the returned id with the
+   * expected id.  A difference results in {@link RemoteFileChangedException}.
+   */
+  public static final String CHANGE_DETECT_MODE_CLIENT = "client";
+
+  /**
+   * Change is detected by passing the expected value in the GetObject request.
+   * If the expected value is unavailable, {@link RemoteFileChangedException} is
+   * thrown.
+   */
+  public static final String CHANGE_DETECT_MODE_SERVER = "server";
+
+  /**
+   * Change is detected on the client side by comparing the returned id with the
+   * expected id.  A difference results in a WARN level message being logged.
+   */
+  public static final String CHANGE_DETECT_MODE_WARN = "warn";
+
+  /**
+   * Change detection is turned off.  Readers may see inconsistent results due
+   * to concurrent writes without any exception or warning messages.  May be
+   * useful with third-party S3 API implementations that don't support one of
+   * the change detection modes.
+   */
+  public static final String CHANGE_DETECT_MODE_NONE = "none";
+
+  /**
+   * Default change detection mode: server.
+   */
+  public static final String CHANGE_DETECT_MODE_DEFAULT =
+      CHANGE_DETECT_MODE_SERVER;
+
+  /**
+   * If true, raises a {@link RemoteFileChangedException} exception when S3
+   * doesn't provide the attribute defined by fs.s3a.change.detection.source.
+   * For example, if source is versionId, but object versioning is not enabled
+   * on the bucket, or alternatively if source is eTag and a third-party S3
+   * implementation that doesn't return eTag is used.
+   * <p>
+   * When false, only a warning message will be logged for this condition.
+   */
+  public static final String CHANGE_DETECT_REQUIRE_VERSION =
+      "fs.s3a.change.detection.version.required";
+
+  /**
+   * Default change detection require version: true.
+   */
+  public static final boolean CHANGE_DETECT_REQUIRE_VERSION_DEFAULT = true;
+
+  /**
+   * Number of times to retry any repeatable S3 client request on failure,
+   * excluding throttling requests: {@value}.
+   */
+  @Deprecated
+  public static final String S3GUARD_CONSISTENCY_RETRY_LIMIT =
+      "fs.s3a.s3guard.consistency.retry.limit";
+
+  /**
+   * Default retry limit: {@value}.
+   */
+  @Deprecated
+  public static final int S3GUARD_CONSISTENCY_RETRY_LIMIT_DEFAULT = 7;
+
+  /**
+   * Initial retry interval: {@value}.
+   */
+  @Deprecated
+  public static final String S3GUARD_CONSISTENCY_RETRY_INTERVAL =
+      "fs.s3a.s3guard.consistency.retry.interval";
+
+  /**
+   * Default initial retry interval: {@value}.
+   * The consistency retry probe uses exponential backoff, because
+   * each probe can cause the S3 load balancers to retain any 404 in
+   * its cache for longer. See HADOOP-16490.
+   */
+  @Deprecated
+  public static final String S3GUARD_CONSISTENCY_RETRY_INTERVAL_DEFAULT =
+      "2s";
+
+  public static final String AWS_SERVICE_IDENTIFIER_S3 = "S3";
+  @Deprecated
+  public static final String AWS_SERVICE_IDENTIFIER_DDB = "DDB";
+  public static final String AWS_SERVICE_IDENTIFIER_STS = "STS";
+
+  /**
+   * How long to wait for the thread pool to terminate when cleaning up.
+   * Value: {@value} seconds.
+   */
+  public static final int THREAD_POOL_SHUTDOWN_DELAY_SECONDS = 30;
+
+  /**
+   * Policy for directory markers.
+   * This is a new feature of HADOOP-13230 which addresses
+   * some scale, performance and permissions issues -but
+   * at the risk of backwards compatibility.
+   */
+  public static final String DIRECTORY_MARKER_POLICY =
+      "fs.s3a.directory.marker.retention";
+
+  /**
+   * Delete directory markers. This is the backwards compatible option.
+   * Value: {@value}.
+   */
+  public static final String DIRECTORY_MARKER_POLICY_DELETE =
+      "delete";
+
+  /**
+   * Retain directory markers.
+   * Value: {@value}.
+   */
+  public static final String DIRECTORY_MARKER_POLICY_KEEP =
+      "keep";
+
+  /**
+   * Retain directory markers in authoritative directory trees only.
+   * Value: {@value}.
+   */
+  public static final String DIRECTORY_MARKER_POLICY_AUTHORITATIVE =
+      "authoritative";
+
+  /**
+   * Default retention policy: {@value}.
+   */
+  public static final String DEFAULT_DIRECTORY_MARKER_POLICY =
+      DIRECTORY_MARKER_POLICY_DELETE;
+
+
+  /**
+   * {@code PathCapabilities} probe to verify that an S3A Filesystem
+   * has the changes needed to safely work with buckets where
+   * directoy markers have not been deleted.
+   * Value: {@value}.
+   */
+  public static final String STORE_CAPABILITY_DIRECTORY_MARKER_AWARE
+      = "fs.s3a.capability.directory.marker.aware";
+
+  /**
+   * {@code PathCapabilities} probe to indicate that the filesystem
+   * keeps directory markers.
+   * Value: {@value}.
+   */
+  public static final String STORE_CAPABILITY_DIRECTORY_MARKER_POLICY_KEEP
+      = "fs.s3a.capability.directory.marker.policy.keep";
+
+  /**
+   * {@code PathCapabilities} probe to indicate that the filesystem
+   * deletes directory markers.
+   * Value: {@value}.
+   */
+  public static final String STORE_CAPABILITY_DIRECTORY_MARKER_POLICY_DELETE
+      = "fs.s3a.capability.directory.marker.policy.delete";
+
+  /**
+   * {@code PathCapabilities} probe to indicate that the filesystem
+   * keeps directory markers in authoritative paths only.
+   * Value: {@value}.
+   */
+  public static final String
+      STORE_CAPABILITY_DIRECTORY_MARKER_POLICY_AUTHORITATIVE =
+      "fs.s3a.capability.directory.marker.policy.authoritative";
+
+  /**
+   * {@code PathCapabilities} probe to indicate that a path
+   * keeps directory markers.
+   * Value: {@value}.
+   */
+  public static final String STORE_CAPABILITY_DIRECTORY_MARKER_ACTION_KEEP
+      = "fs.s3a.capability.directory.marker.action.keep";
+
+  /**
+   * {@code PathCapabilities} probe to indicate that a path
+   * deletes directory markers.
+   * Value: {@value}.
+   */
+  public static final String STORE_CAPABILITY_DIRECTORY_MARKER_ACTION_DELETE
+      = "fs.s3a.capability.directory.marker.action.delete";
+
+  /**
+   * To comply with the XAttr rules, all headers of the object retrieved
+   * through the getXAttr APIs have the prefix: {@value}.
+   */
+  public static final String XA_HEADER_PREFIX = "header.";
+
+  /**
+   * AWS S3 region for the bucket. When set bypasses the construction of
+   * region through endpoint url.
+   */
+  public static final String AWS_REGION = "fs.s3a.endpoint.region";
+
+  /**
+   * The special S3 region which can be used to talk to any bucket.
+   * Value {@value}.
+   */
+  public static final String AWS_S3_CENTRAL_REGION = "us-east-1";
+
+  /**
+   * Require that all S3 access is made through Access Points.
+   */
+  public static final String AWS_S3_ACCESSPOINT_REQUIRED = "fs.s3a.accesspoint.required";
 }

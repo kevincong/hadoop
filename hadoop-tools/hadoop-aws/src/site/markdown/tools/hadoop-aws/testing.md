@@ -278,6 +278,15 @@ For the default test dataset, hosted in the `landsat-pds` bucket, this is:
 </property>
 ```
 
+### <a name="csv"></a> Testing Access Point Integration
+S3a supports using Access Point ARNs to access data in S3. If you think your changes affect VPC
+integration, request signing, ARN manipulation, or any code path that deals with the actual
+sending and retrieving of data to/from S3, make sure you run the entire integration test suite with
+this feature enabled.
+
+Check out [our documentation](./index.html#accesspoints) for steps on how to enable this feature. To
+create access points for your S3 bucket you can use the AWS Console or CLI.
+
 ## <a name="reporting"></a> Viewing Integration Test Reports
 
 
@@ -953,6 +962,67 @@ When the `s3guard` profile is enabled, following profiles can be specified:
   You won't be charged bills for using DynamoDB in test. As it runs in-JVM,
   the table isn't shared across other tests running in parallel.
 * `non-auth`: treat the S3Guard metadata as authoritative.
+## <a name="qualifiying_sdk_updates"></a> Qualifying an AWS SDK Update
+
+Updating the AWS SDK is something which does need to be done regularly,
+but is rarely without complications, major or minor.
+
+Assume that the version of the SDK will remain constant for an X.Y release,
+excluding security fixes, so it's good to have an update before each release
+&mdash; as long as that update works doesn't trigger any regressions.
+
+
+1. Don't make this a last minute action.
+1. The upgrade patch should focus purely on the SDK update, so it can be cherry
+picked and reverted easily.
+1. Do not mix in an SDK update with any other piece of work, for the same reason.
+1. Plan for an afternoon's work, including before/after testing, log analysis
+and any manual tests.
+1. Make sure all the integration tests are running (including ARN, encryption, scale)
+  *before you start the upgrade*.
+1. Create a JIRA for updating the SDK. Don't include the version (yet),
+as it may take a couple of SDK updates before it is ready.
+1. Identify the latest AWS SDK [available for download](https://aws.amazon.com/sdk-for-java/).
+1. Create a private git branch of trunk for JIRA, and in
+  `hadoop-project/pom.xml` update the `aws-java-sdk.version` to the new SDK version.
+1. Update AWS SDK versions in NOTICE.txt.
+1. Do a clean build and rerun all the `hadoop-aws` tests.
+  This includes the `-Pscale` set, with a role defined for the assumed role tests.
+  in `fs.s3a.assumed.role.arn` for testing assumed roles,
+  and `fs.s3a.encryption.key` for encryption, for full coverage.
+  If you can, scale up the scale tests.
+1. Create an Access Point for your bucket (using the AWS Console or CLI), update S3a configuration
+to use it ([docs for help](./index.html#accesspoints)) and re-run the `ITest*` integration tests from
+your IDE or via maven.
+1. Run the `ILoadTest*` load tests from your IDE or via maven through
+      `mvn verify -Dtest=skip -Dit.test=ILoadTest\*`  ; look for regressions in performance
+      as much as failures.
+1. Create the site with `mvn site -DskipTests`; look in `target/site` for the report.
+1. Review *every single `-output.txt` file in `hadoop-tools/hadoop-aws/target/failsafe-reports`,
+  paying particular attention to
+  `org.apache.hadoop.fs.s3a.scale.ITestS3AInputStreamPerformance-output.txt`,
+  as that is where changes in stream close/abort logic will surface.
+1. Run `mvn install` to install the artifacts, then in
+  `hadoop-cloud-storage-project/hadoop-cloud-storage` run
+  `mvn dependency:tree -Dverbose > target/dependencies.txt`.
+  Examine the `target/dependencies.txt` file to verify that no new
+  artifacts have unintentionally been declared as dependencies
+  of the shaded `aws-java-sdk-bundle` artifact.
+1. Run a full AWS-test suite with S3 client-side encryption enabled by
+ setting `fs.s3a.encryption.algorithm` to 'CSE-KMS' and setting up AWS-KMS
+  Key ID in `fs.s3a.encryption.key`.
+
+### Basic command line regression testing
+
+We need a run through of the CLI to see if there have been changes there
+which cause problems, especially whether new log messages have surfaced,
+or whether some packaging change breaks that CLI.
+
+From the root of the project, create a command line release `mvn package -Pdist -DskipTests -Dmaven.javadoc.skip=true  -DskipShade`;
+
+1. Change into the `hadoop-dist/target/hadoop-x.y.z-SNAPSHOT` dir.
+1. Copy a `core-site.xml` file into `etc/hadoop`.
+1. Set the `HADOOP_OPTIONAL_TOOLS` env var on the command line or `~/.hadoop-env`.
 
 ```bash
 mvn -T 1C verify -Dparallel-tests -DtestsThreadCount=6 -Ds3guard -Ddynamo -Dauth

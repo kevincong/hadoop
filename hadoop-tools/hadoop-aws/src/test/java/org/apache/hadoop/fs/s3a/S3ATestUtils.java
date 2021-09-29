@@ -884,4 +884,134 @@ public final class S3ATestUtils {
         .contains(providerClassname);
   }
 
+  public static void checkListingDoesNotContainPath(S3AFileSystem fs, Path filePath)
+      throws IOException {
+    final RemoteIterator<LocatedFileStatus> listIter =
+        fs.listFiles(filePath.getParent(), false);
+    while (listIter.hasNext()) {
+      final LocatedFileStatus lfs = listIter.next();
+      assertNotEquals("Listing was not supposed to include " + filePath,
+            filePath, lfs.getPath());
+    }
+    LOG.info("{}; file omitted from listFiles listing as expected.", filePath);
+
+    final FileStatus[] fileStatuses = fs.listStatus(filePath.getParent());
+    for (FileStatus fileStatus : fileStatuses) {
+      assertNotEquals("Listing was not supposed to include " + filePath,
+            filePath, fileStatus.getPath());
+    }
+    LOG.info("{}; file omitted from listStatus as expected.", filePath);
+  }
+
+  public static void checkListingContainsPath(S3AFileSystem fs, Path filePath)
+      throws IOException {
+
+    boolean listFilesHasIt = false;
+    boolean listStatusHasIt = false;
+
+    final RemoteIterator<LocatedFileStatus> listIter =
+        fs.listFiles(filePath.getParent(), false);
+
+
+    while (listIter.hasNext()) {
+      final LocatedFileStatus lfs = listIter.next();
+      if (filePath.equals(lfs.getPath())) {
+        listFilesHasIt = true;
+      }
+    }
+
+    final FileStatus[] fileStatuses = fs.listStatus(filePath.getParent());
+    for (FileStatus fileStatus : fileStatuses) {
+      if (filePath.equals(fileStatus.getPath())) {
+        listStatusHasIt = true;
+      }
+    }
+    assertTrue("fs.listFiles didn't include " + filePath,
+          listFilesHasIt);
+    assertTrue("fs.listStatus didn't include " + filePath,
+          listStatusHasIt);
+  }
+
+  /**
+   * This creates a set containing all current threads and some well-known
+   * thread names whose existence should not fail test runs.
+   * They are generally static cleaner threads created by various classes
+   * on instantiation.
+   * @return a set of threads to use in later assertions.
+   */
+  public static Set<String> listInitialThreadsForLifecycleChecks() {
+    Set<String> threadSet = getCurrentThreadNames();
+    // static filesystem statistics cleaner
+    threadSet.add(
+        "org.apache.hadoop.fs.FileSystem$Statistics$StatisticsDataReferenceCleaner");
+    // AWS progress callbacks
+    threadSet.add("java-sdk-progress-listener-callback-thread");
+    // another AWS thread
+    threadSet.add("java-sdk-http-connection-reaper");
+    // java.lang.UNIXProcess. maybe if chmod is called?
+    threadSet.add("process reaper");
+    // once a quantile has been scheduled, the mutable quantile thread pool
+    // is initialized; it has a minimum thread size of 1.
+    threadSet.add("MutableQuantiles-0");
+    // IDE?
+    threadSet.add("Attach Listener");
+    return threadSet;
+  }
+
+  /**
+   * Get a set containing the names of all active threads,
+   * stripping out all test runner threads.
+   * @return the current set of threads.
+   */
+  public static Set<String> getCurrentThreadNames() {
+    TreeSet<String> threads = Thread.getAllStackTraces().keySet()
+        .stream()
+        .map(Thread::getName)
+        .filter(n -> n.startsWith("JUnit"))
+        .filter(n -> n.startsWith("surefire"))
+        .collect(Collectors.toCollection(TreeSet::new));
+    return threads;
+  }
+
+  /**
+   * Call the package-private {@code innerGetFileStatus()} method
+   * on the passed in FS.
+   * @param fs filesystem
+   * @param path path
+   * @param needEmptyDirectoryFlag look for empty directory
+   * @param probes file status probes to perform
+   * @return the status
+   * @throws IOException
+   */
+  public static S3AFileStatus innerGetFileStatus(
+      S3AFileSystem fs,
+      Path path,
+      boolean needEmptyDirectoryFlag,
+      Set<StatusProbeEnum> probes) throws IOException {
+
+    return fs.innerGetFileStatus(
+        path,
+        needEmptyDirectoryFlag,
+        probes);
+  }
+
+  /**
+   * Skip a test if encryption algorithm or encryption key is not set.
+   *
+   * @param configuration configuration to probe.
+   */
+  public static void skipIfEncryptionNotSet(Configuration configuration,
+      S3AEncryptionMethods s3AEncryptionMethod) throws IOException {
+    // if S3 encryption algorithm is not set to desired method or AWS encryption
+    // key is not set, then skip.
+    String bucket = getTestBucketName(configuration);
+    final EncryptionSecrets secrets = buildEncryptionSecrets(bucket, configuration);
+    if (!s3AEncryptionMethod.getMethod().equals(secrets.getEncryptionMethod().getMethod())
+        || StringUtils.isBlank(secrets.getEncryptionKey())) {
+      skip(S3_ENCRYPTION_KEY + " is not set for " + s3AEncryptionMethod
+          .getMethod() + " or " + S3_ENCRYPTION_ALGORITHM + " is not set to "
+          + s3AEncryptionMethod.getMethod()
+          + " in " + secrets);
+    }
+  }
 }
