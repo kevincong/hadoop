@@ -420,60 +420,60 @@ public class S3AInstrumentation implements Closeable, MetricsSource {
     return metric;
   }
 
-  /**
-   * Get the instance IO Statistics.
-   * @return statistics.
-   */
-  @Override
-  public IOStatisticsStore getIOStatistics() {
-    return instanceIOStatistics;
-  }
-
-  /**
-   * Get the duration tracker factory.
-   * @return duration tracking for the instrumentation.
-   */
-  public DurationTrackerFactory getDurationTrackerFactory() {
-    return durationTrackerFactory;
-  }
-
-  /**
-   * The duration tracker updates the metrics with the count
-   * and IOStatistics will full duration information.
-   * @param key statistic key prefix
-   * @param count  #of times to increment the matching counter in this
-   * operation.
-   * @return a duration tracker.
-   */
-  @Override
-  public DurationTracker trackDuration(final String key, final long count) {
-    return durationTrackerFactory.trackDuration(key, count);
-  }
-
-  /**
-   * Create an IOStatistics store which updates FS metrics
-   * as well as IOStatistics.
-   * @return instance of the store.
-   */
-  public IOStatisticsStore createMetricsUpdatingStore() {
-    return new MetricsUpdatingIOStatisticsStore();
-  }
-
-  /**
-   * String representation. Includes the IOStatistics
-   * when logging is at DEBUG.
-   * @return a string form.
-   */
-  @Override
-  public String toString() {
-    final StringBuilder sb = new StringBuilder(
-        "S3AInstrumentation{");
-    if (LOG.isDebugEnabled()) {
-      sb.append("instanceIOStatistics=").append(instanceIOStatistics);
-    }
-    sb.append('}');
-    return sb.toString();
-  }
+//  /**
+//   * Get the instance IO Statistics.
+//   * @return statistics.
+//   */
+//  @Override
+//  public IOStatisticsStore getIOStatistics() {
+//    return instanceIOStatistics;
+//  }
+//
+//  /**
+//   * Get the duration tracker factory.
+//   * @return duration tracking for the instrumentation.
+//   */
+//  public DurationTrackerFactory getDurationTrackerFactory() {
+//    return durationTrackerFactory;
+//  }
+//
+//  /**
+//   * The duration tracker updates the metrics with the count
+//   * and IOStatistics will full duration information.
+//   * @param key statistic key prefix
+//   * @param count  #of times to increment the matching counter in this
+//   * operation.
+//   * @return a duration tracker.
+//   */
+//  @Override
+//  public DurationTracker trackDuration(final String key, final long count) {
+//    return durationTrackerFactory.trackDuration(key, count);
+//  }
+//
+//  /**
+//   * Create an IOStatistics store which updates FS metrics
+//   * as well as IOStatistics.
+//   * @return instance of the store.
+//   */
+//  public IOStatisticsStore createMetricsUpdatingStore() {
+//    return new MetricsUpdatingIOStatisticsStore();
+//  }
+//
+//  /**
+//   * String representation. Includes the IOStatistics
+//   * when logging is at DEBUG.
+//   * @return a string form.
+//   */
+//  @Override
+//  public String toString() {
+//    final StringBuilder sb = new StringBuilder(
+//        "S3AInstrumentation{");
+//    if (LOG.isDebugEnabled()) {
+//      sb.append("instanceIOStatistics=").append(instanceIOStatistics);
+//    }
+//    sb.append('}');
+//    return sb.toString();
+//  }
 
   /**
    * Indicate that S3A created a file.

@@ -18,6 +18,13 @@
 
 package org.apache.hadoop.fs.s3a.auth;
 
+import com.google.common.collect.Lists;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 import static org.apache.hadoop.fs.s3a.auth.RoleModel.*;
 
 /**
@@ -28,7 +35,20 @@ public final class RolePolicies {
 
   private RolePolicies() {
   }
+  /** All KMS operations: {@value}.*/
+  public static final String KMS_ALL_OPERATIONS = "kms:*";
 
+  /**
+   * Arn for all KMS keys: {@value}.
+   */
+  public static final String KMS_ALL_KEYS = "*";
+
+  /**
+   * Statement to allow KMS R/W access access, so full use of
+   * SSE-KMS.
+   */
+  public static final Statement STATEMENT_ALLOW_SSE_KMS_RW =
+          statement(true, KMS_ALL_KEYS, KMS_ALL_OPERATIONS);
   /**
    * All S3 operations: {@value}.
    */
@@ -38,6 +58,26 @@ public final class RolePolicies {
    * All S3 buckets: {@value}.
    */
   public static final String S3_ALL_BUCKETS = "arn:aws:s3:::*";
+
+  /**
+   * All bucket list operations, including
+   * {@link #S3_BUCKET_LIST_BUCKET} and
+   * {@link #S3_BUCKET_LIST_MULTIPART_UPLOADS}.
+   */
+  public static final String S3_BUCKET_ALL_LIST = "s3:ListBucket*";
+
+  /**
+   * This is used by the abort operation in S3A commit work.
+   * It applies to a bucket, not to a path in a bucket.
+   */
+  public static final String S3_BUCKET_LIST_MULTIPART_UPLOADS =
+          "s3:ListBucketMultipartUploads";
+
+  /**
+   * List the contents of a bucket.
+   * It applies to a bucket, not to a path in a bucket.
+   */
+  public static final String S3_BUCKET_LIST_BUCKET = "s3:ListBucket";
 
 
   public static final String S3_ALL_LIST_OPERATIONS = "s3:List*";
@@ -96,6 +136,7 @@ public final class RolePolicies {
   public static final String S3_GET_OBJECT_TORRENT = "s3:GetObjectTorrent";
 
   public static final String S3_GET_OBJECT_VERSION = "s3:GetObjectVersion";
+  public static final String S3_GET_BUCKET_LOCATION = "s3:GetBucketLocation";
 
   public static final String S3_GET_OBJECT_VERSION_ACL
       = "s3:GetObjectVersionAcl";
@@ -144,6 +185,9 @@ public final class RolePolicies {
           S3_LIST_BUCKET_MULTPART_UPLOADS,
           S3_GET_OBJECT,
       };
+
+  public static final List<String> S3_ROOT_READ_OPERATIONS_LIST =
+          Collections.unmodifiableList(Arrays.asList(S3_ALL_GET));
 
   /**
    * Actions needed to write data to an S3A Path.
@@ -224,5 +268,52 @@ public final class RolePolicies {
       STATEMENT_ALL_S3,
       STATEMENT_ALL_DDB
   );
+  /**
+   * From an S3 bucket name, build an ARN to refer to it.
+   * @param bucket bucket name.
+   * @param write are write permissions required
+   * @return return statement granting access.
+   */
+  public static List<Statement> allowS3Operations(String bucket,
+                                                  boolean write) {
+    // add the bucket operations for the specific bucket ARN
+    ArrayList<Statement> statements =
+            Lists.newArrayList(
+                    statement(true,
+                            bucketToArn(bucket),
+                            S3_GET_BUCKET_LOCATION, S3_BUCKET_ALL_LIST));
+    // then add the statements for objects in the buckets
+    if (write) {
+      statements.add(
+              statement(true,
+                      bucketObjectsToArn(bucket),
+                      S3_ROOT_RW_OPERATIONS));
+    } else {
+      statements.add(
+              statement(true,
+                      bucketObjectsToArn(bucket),
+                      S3_ROOT_READ_OPERATIONS_LIST));
+    }
+    return statements;
+  }
+
+  /**
+   * From an S3 bucket name, build an ARN to refer to all objects in
+   * it.
+   * @param bucket bucket name.
+   * @return return the ARN to use in statements.
+   */
+  public static String bucketObjectsToArn(String bucket) {
+    return String.format("arn:aws:s3:::%s/*", bucket);
+  }
+
+  /**
+   * From an S3 bucket name, build an ARN to refer to it.
+   * @param bucket bucket name.
+   * @return return the ARN to use in statements.
+   */
+  public static String bucketToArn(String bucket) {
+    return String.format("arn:aws:s3:::%s", bucket);
+  }
 
 }

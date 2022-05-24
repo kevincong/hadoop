@@ -20,6 +20,7 @@ package org.apache.hadoop.fs.s3a.auth;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -175,6 +176,21 @@ public class RoleModel {
 
   /**
    * Create a statement.
+   * @param allow allow or deny
+   * @param scope scope
+   * @param actions actions
+   * @return the formatted json statement
+   */
+  public static Statement statement(boolean allow,
+                                    String scope,
+                                    Collection<String> actions) {
+    return new Statement(RoleModel.effect(allow))
+            .addActions(actions)
+            .addResources(scope);
+  }
+
+  /**
+   * Create a statement.
    * If {@code isDirectory} is true, a "/" is added to the path.
    * This is critical when adding wildcard permissions under
    * a directory, and also needed when locking down dir-as-file
@@ -269,6 +285,11 @@ public class RoleModel {
 
     public Statement addActions(String... actions) {
       Collections.addAll(action, actions);
+      return this;
+    }
+
+    public Statement addActions(Collection<String> actions) {
+      action.addAll(actions);
       return this;
     }
 

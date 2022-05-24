@@ -289,6 +289,28 @@ public final class Constants {
       "fs.s3a.server-side-encryption.key";
 
   /**
+   * Set S3-server side encryption(SSE) or S3-Client side encryption(CSE)
+   * algorithm. Check {@link S3AEncryptionMethods} for valid options.
+   * <br>
+   * value: {@value}
+   */
+  public static final String S3_ENCRYPTION_ALGORITHM =
+          "fs.s3a.encryption.algorithm";
+
+  /**
+   * Set S3-SSE or S3-CSE encryption Key if required.
+   * <br>
+   * <i>Note:</i>
+   *   <ul>
+   *     <li>In case of S3-CSE this value needs to be set for CSE to work.</li>
+   *     <li>In case of S3-SSE follow {@link #SERVER_SIDE_ENCRYPTION_KEY}</li>
+   *   </ul>
+   * value:{@value}
+   */
+  public static final String S3_ENCRYPTION_KEY =
+          "fs.s3a.encryption.key";
+
+  /**
    * The original key name. Never used in ASF releases,
    * but did get into downstream products.
    */

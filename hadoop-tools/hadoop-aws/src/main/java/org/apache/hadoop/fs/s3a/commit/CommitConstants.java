@@ -237,4 +237,11 @@ public final class CommitConstants {
   public static final String FS_S3A_COMMITTER_STAGING_ABORT_PENDING_UPLOADS =
       "fs.s3a.committer.staging.abort.pending.uploads";
 
+  /**
+   * Magic Marker header to declare final file length on magic uploads
+   * marker objects: {@value}.
+   */
+  public static final String X_HEADER_MAGIC_MARKER =
+          "x-hadoop-s3a-magic-data-length";
+
 }

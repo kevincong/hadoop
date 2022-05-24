@@ -100,9 +100,15 @@ import org.apache.hadoop.fs.PathIsNotEmptyDirectoryException;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.s3a.api.RequestFactory;
+import org.apache.hadoop.fs.s3a.auth.RoleModel;
+import org.apache.hadoop.fs.s3a.auth.delegation.AWSPolicyProvider;
+import org.apache.hadoop.fs.s3a.auth.delegation.DelegationOperations;
+import org.apache.hadoop.fs.s3a.auth.delegation.EncryptionSecrets;
 import org.apache.hadoop.fs.s3a.commit.CommitConstants;
 import org.apache.hadoop.fs.s3a.commit.PutTracker;
 import org.apache.hadoop.fs.s3a.commit.MagicCommitIntegration;
+import org.apache.hadoop.fs.s3a.impl.RequestFactoryImpl;
 import org.apache.hadoop.fs.s3a.s3guard.DirListingMetadata;
 import org.apache.hadoop.fs.s3a.s3guard.MetadataStoreListFilesIterator;
 import org.apache.hadoop.fs.s3a.s3guard.MetadataStore;
@@ -111,12 +117,14 @@ import org.apache.hadoop.fs.s3a.s3guard.S3Guard;
 import org.apache.hadoop.fs.s3native.S3xLoginHelper;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.fs.store.EtagChecksum;
+import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.BlockingThreadPoolExecutorService;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.SemaphoredDelegatingExecutor;
 
+import static java.util.Objects.requireNonNull;
 import static org.apache.hadoop.fs.s3a.Constants.*;
 import static org.apache.hadoop.fs.s3a.Invoker.*;
 import static org.apache.hadoop.fs.s3a.S3AUtils.*;
@@ -126,17 +134,18 @@ import static org.apache.commons.lang.StringUtils.isNotEmpty;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import static org.apache.hadoop.fs.s3a.audit.S3AAuditConstants.INITIALIZE_SPAN;
-import static org.apache.hadoop.fs.s3a.auth.RolePolicies.STATEMENT_ALLOW_SSE_KMS_RW;
+//import static org.apache.hadoop.fs.s3a.audit.S3AAuditConstants.INITIALIZE_SPAN;
+//import static org.apache.hadoop.fs.s3a.auth.RolePolicies.STATEMENT_ALLOW_SSE_KMS_RW;
 import static org.apache.hadoop.fs.s3a.auth.RolePolicies.allowS3Operations;
-import static org.apache.hadoop.fs.s3a.auth.delegation.S3ADelegationTokens.TokenIssuingPolicy.NoTokensAvailable;
+//import static org.apache.hadoop.fs.s3a.auth.delegation.S3ADelegationTokens.TokenIssuingPolicy.NoTokensAvailable;
+import static org.apache.hadoop.fs.s3a.auth.RolePolicies.STATEMENT_ALLOW_SSE_KMS_RW;
 import static org.apache.hadoop.fs.s3a.auth.delegation.S3ADelegationTokens.hasDelegationTokenBinding;
-import static org.apache.hadoop.fs.s3a.commit.CommitConstants.FS_S3A_COMMITTER_ABORT_PENDING_UPLOADS;
-import static org.apache.hadoop.fs.s3a.commit.CommitConstants.FS_S3A_COMMITTER_STAGING_ABORT_PENDING_UPLOADS;
-import static org.apache.hadoop.fs.s3a.impl.CallableSupplier.submit;
-import static org.apache.hadoop.fs.s3a.impl.CallableSupplier.waitForCompletionIgnoringExceptions;
-import static org.apache.hadoop.fs.s3a.impl.ErrorTranslation.isObjectNotFound;
-import static org.apache.hadoop.fs.s3a.impl.ErrorTranslation.isUnknownBucket;
+//import static org.apache.hadoop.fs.s3a.commit.CommitConstants.FS_S3A_COMMITTER_ABORT_PENDING_UPLOADS;
+//import static org.apache.hadoop.fs.s3a.commit.CommitConstants.FS_S3A_COMMITTER_STAGING_ABORT_PENDING_UPLOADS;
+//import static org.apache.hadoop.fs.s3a.impl.CallableSupplier.submit;
+//import static org.apache.hadoop.fs.s3a.impl.CallableSupplier.waitForCompletionIgnoringExceptions;
+//import static org.apache.hadoop.fs.s3a.impl.ErrorTranslation.isObjectNotFound;
+//import static org.apache.hadoop.fs.s3a.impl.ErrorTranslation.isUnknownBucket;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.AP_INACCESSIBLE;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.AP_REQUIRED_EXCEPTION;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.ARN_BUCKET_OPTION;
@@ -147,18 +156,18 @@ import static org.apache.hadoop.fs.s3a.impl.InternalConstants.SC_403;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.SC_404;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.UPLOAD_PART_COUNT_LIMIT;
 import static org.apache.hadoop.fs.s3a.impl.NetworkBinding.fixBucketRegion;
-import static org.apache.hadoop.fs.s3a.impl.NetworkBinding.logDnsLookup;
-import static org.apache.hadoop.fs.s3a.s3guard.S3Guard.checkNoS3Guard;
-import static org.apache.hadoop.fs.statistics.IOStatisticsLogging.logIOStatisticsAtLevel;
-import static org.apache.hadoop.fs.statistics.StoreStatisticNames.OBJECT_CONTINUE_LIST_REQUEST;
-import static org.apache.hadoop.fs.statistics.StoreStatisticNames.OBJECT_LIST_REQUEST;
-import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.pairedTrackerFactory;
-import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDuration;
-import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfInvocation;
-import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfOperation;
-import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfSupplier;
-import static org.apache.hadoop.io.IOUtils.cleanupWithLogger;
-import static org.apache.hadoop.util.functional.RemoteIterators.typeCastingRemoteIterator;
+//import static org.apache.hadoop.fs.s3a.impl.NetworkBinding.logDnsLookup;
+//import static org.apache.hadoop.fs.s3a.s3guard.S3Guard.checkNoS3Guard;
+//import static org.apache.hadoop.fs.statistics.IOStatisticsLogging.logIOStatisticsAtLevel;
+//import static org.apache.hadoop.fs.statistics.StoreStatisticNames.OBJECT_CONTINUE_LIST_REQUEST;
+//import static org.apache.hadoop.fs.statistics.StoreStatisticNames.OBJECT_LIST_REQUEST;
+//import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.pairedTrackerFactory;
+//import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDuration;
+//import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfInvocation;
+//import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfOperation;
+//import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfSupplier;
+//import static org.apache.hadoop.io.IOUtils.cleanupWithLogger;
+//import static org.apache.hadoop.util.functional.RemoteIterators.typeCastingRemoteIterator;
 
 /**
  * The core S3A Filesystem implementation.
@@ -207,7 +216,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
 
   /**
    * Represents bucket name for all S3 operations. If per bucket override for
-   * {@link InternalConstants#ARN_BUCKET_OPTION} property  is set, then the bucket is updated to
+   * {@link org.apache.hadoop.fs.s3a.impl.InternalConstants#ARN_BUCKET_OPTION} property  is set, then the bucket is updated to
    * point to the configured Arn.
    */
   private String bucket;
@@ -225,6 +234,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   private LocalDirAllocator directoryAllocator;
   private CannedAccessControlList cannedACL;
   private S3AEncryptionMethods serverSideEncryptionAlgorithm;
+  private EncryptionSecrets encryptionSecrets = new EncryptionSecrets();
   private S3AInstrumentation instrumentation;
   private final S3AStorageStatistics storageStatistics =
       createStorageStatistics();
@@ -245,39 +255,39 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   private MagicCommitIntegration committerIntegration;
 
   private AWSCredentialProviderList credentials;
-  private SignerManager signerManager;
+  //private SignerManager signerManager;
 
   /**
    * Page size for deletions.
    */
-  private int pageSize;
+  //private int pageSize;
 
-  private final ListingOperationCallbacks listingOperationCallbacks =
-          new ListingOperationCallbacksImpl();
+  //private final ListingOperationCallbacks listingOperationCallbacks =
+  //        new ListingOperationCallbacksImpl();
   /**
    * Directory policy.
    */
-  private DirectoryPolicy directoryPolicy;
+  //private DirectoryPolicy directoryPolicy;
 
   /**
    * Context accessors for re-use.
    */
-  private final ContextAccessors contextAccessors = new ContextAccessorsImpl();
+  //private final ContextAccessors contextAccessors = new ContextAccessorsImpl();
 
   /**
    * Factory for AWS requests.
    */
   private RequestFactory requestFactory;
 
-  /**
-   * Audit manager (service lifecycle).
-   * Creates the audit service and manages the binding of different audit spans
-   * to different threads.
-   * Initially this is a no-op manager; once the service is initialized it will
-   * be replaced with a configured one.
-   */
-  private AuditManagerS3A auditManager =
-      AuditIntegration.stubAuditManager();
+//  /**
+//   * Audit manager (service lifecycle).
+//   * Creates the audit service and manages the binding of different audit spans
+//   * to different threads.
+//   * Initially this is a no-op manager; once the service is initialized it will
+//   * be replaced with a configured one.
+//   */
+//  private AuditManagerS3A auditManager =
+//      AuditIntegration.stubAuditManager();
 
   /**
    * Is this S3A FS instance using S3 client side encryption?
@@ -315,15 +325,15 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
    */
   public void initialize(URI name, Configuration originalConf)
       throws IOException {
-    setUri(name);
+    // setUri(name);
     // get the host; this is guaranteed to be non-null, non-empty
     bucket = name.getHost();
-    LOG.debug("Initializing S3AFileSystem for {}", bucket);
-    // clone the configuration into one with propagated bucket options
-    Configuration conf = propagateBucketOptions(originalConf, bucket);
-    patchSecurityCredentialProviders(conf);
-    super.initialize(name, conf);
-    setConf(conf);
+    // LOG.debug("Initializing S3AFileSystem for {}", bucket);
+    // // clone the configuration into one with propagated bucket options
+    // Configuration conf = propagateBucketOptions(originalConf, bucket);
+    // patchSecurityCredentialProviders(conf);
+    // super.initialize(name, conf);
+    // setConf(conf);
     try {
       instrumentation = new S3AInstrumentation(name);
       LOG.debug("Initializing S3AFileSystem for {}", bucket);
@@ -499,11 +509,8 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   protected void verifyBucketExists()
       throws FileNotFoundException, IOException {
     if (!invoker.retry("doesBucketExist", bucket, true,
-        trackDurationOfOperation(getDurationTrackerFactory(),
-            STORE_EXISTS_PROBE.getSymbol(),
-            () -> s3.doesBucketExist(bucket)))) {
-      throw new UnknownStoreException("s3a://" + bucket + "/", " Bucket does "
-          + "not exist");
+        () -> s3.doesBucketExist(bucket))) {
+      throw new FileNotFoundException("Bucket " + bucket + " does not exist");
     }
   }
 
@@ -518,23 +525,21 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   protected void verifyBucketExistsV2()
       throws UnknownStoreException, IOException {
     if (!invoker.retry("doesBucketExistV2", bucket, true,
-        trackDurationOfOperation(getDurationTrackerFactory(),
-            STORE_EXISTS_PROBE.getSymbol(),
-            () -> {
-              // Bug in SDK always returns `true` for AccessPoint ARNs with `doesBucketExistV2()`
-              // expanding implementation to use ARNs and buckets correctly
-              try {
-                s3.getBucketAcl(bucket);
-              } catch (AmazonServiceException ex) {
-                int statusCode = ex.getStatusCode();
-                if (statusCode == SC_404 ||
-                    (statusCode == SC_403 && ex.getMessage().contains(AP_INACCESSIBLE))) {
-                  return false;
-                }
-              }
+        () -> {
+          // Bug in SDK always returns `true` for AccessPoint ARNs with `doesBucketExistV2()`
+          // expanding implementation to use ARNs and buckets correctly
+          try {
+            s3.getBucketAcl(bucket);
+          } catch (AmazonServiceException ex) {
+            int statusCode = ex.getStatusCode();
+            if (statusCode == SC_404 ||
+                (statusCode == SC_403 && ex.getMessage().contains(AP_INACCESSIBLE))) {
+              return false;
+            }
+          }
 
-              return true;
-            }))) {
+          return true;
+        })) {
       throw new UnknownStoreException("s3a://" + bucket + "/", " Bucket does "
           + "not exist");
     }
@@ -566,145 +571,145 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     return listing;
   }
 
-  /**
-   * Set up the client bindings.
-   * If delegation tokens are enabled, the FS first looks for a DT
-   * ahead of any other bindings;.
-   * If there is a DT it uses that to do the auth
-   * and switches to the DT authenticator automatically (and exclusively)
-   * @param name URI of the FS
-   * @param dtEnabled are delegation tokens enabled?
-   * @throws IOException failure.
-   */
-  private void bindAWSClient(URI name, boolean dtEnabled) throws IOException {
-    Configuration conf = getConf();
-    credentials = null;
-    String uaSuffix = "";
+//  /**
+//   * Set up the client bindings.
+//   * If delegation tokens are enabled, the FS first looks for a DT
+//   * ahead of any other bindings;.
+//   * If there is a DT it uses that to do the auth
+//   * and switches to the DT authenticator automatically (and exclusively)
+//   * @param name URI of the FS
+//   * @param dtEnabled are delegation tokens enabled?
+//   * @throws IOException failure.
+//   */
+//  private void bindAWSClient(URI name, boolean dtEnabled) throws IOException {
+//    Configuration conf = getConf();
+//    credentials = null;
+//    String uaSuffix = "";
+//
+//    if (dtEnabled) {
+//      // Delegation support.
+//      // Create and start the DT integration.
+//      // Then look for an existing DT for this bucket, switch to authenticating
+//      // with it if so.
+//
+//      LOG.debug("Using delegation tokens");
+//      S3ADelegationTokens tokens = new S3ADelegationTokens();
+//      this.delegationTokens = Optional.of(tokens);
+//      tokens.bindToFileSystem(getCanonicalUri(),
+//          createStoreContext(),
+//          createDelegationOperations());
+//      tokens.init(conf);
+//      tokens.start();
+//      // switch to the DT provider and bypass all other configured
+//      // providers.
+//      if (tokens.isBoundToDT()) {
+//        // A DT was retrieved.
+//        LOG.debug("Using existing delegation token");
+//        // and use the encryption settings from that client, whatever they were
+//      } else {
+//        LOG.debug("No delegation token for this instance");
+//      }
+//      // Get new credential chain
+//      credentials = tokens.getCredentialProviders();
+//      // and any encryption secrets which came from a DT
+//      tokens.getEncryptionSecrets()
+//          .ifPresent(this::setEncryptionSecrets);
+//      // and update the UA field with any diagnostics provided by
+//      // the DT binding.
+//      uaSuffix = tokens.getUserAgentField();
+//    } else {
+//      // DT support is disabled, so create the normal credential chain
+//      credentials = createAWSCredentialProviderSet(name, conf);
+//    }
+//    LOG.debug("Using credential provider {}", credentials);
+//    Class<? extends S3ClientFactory> s3ClientFactoryClass = conf.getClass(
+//        S3_CLIENT_FACTORY_IMPL, DEFAULT_S3_CLIENT_FACTORY_IMPL,
+//        S3ClientFactory.class);
+//
+//    String endpoint = accessPoint == null
+//        ? conf.getTrimmed(ENDPOINT, DEFAULT_ENDPOINT)
+//        : accessPoint.getEndpoint();
+//
+//    S3ClientFactory.S3ClientCreationParameters parameters = null;
+//    parameters = new S3ClientFactory.S3ClientCreationParameters()
+//        .withCredentialSet(credentials)
+//        .withEndpoint(endpoint)
+//        .withMetrics(statisticsContext.newStatisticsFromAwsSdk())
+//        .withPathStyleAccess(conf.getBoolean(PATH_STYLE_ACCESS, false))
+//        .withUserAgentSuffix(uaSuffix)
+//        .withRequestHandlers(auditManager.createRequestHandlers());
+//
+//    s3 = ReflectionUtils.newInstance(s3ClientFactoryClass, conf)
+//        .createS3Client(getUri(),
+//            parameters);
+//  }
 
-    if (dtEnabled) {
-      // Delegation support.
-      // Create and start the DT integration.
-      // Then look for an existing DT for this bucket, switch to authenticating
-      // with it if so.
+//  /**
+//   * Initialize and launch the audit manager and service.
+//   * As this takes the FS IOStatistics store, it must be invoked
+//   * after instrumentation is initialized.
+//   * @throws IOException failure to instantiate/initialize.
+//   */
+//  protected void initializeAuditService() throws IOException {
+//    auditManager = AuditIntegration.createAndStartAuditManager(
+//        getConf(),
+//        instrumentation.createMetricsUpdatingStore());
+//  }
 
-      LOG.debug("Using delegation tokens");
-      S3ADelegationTokens tokens = new S3ADelegationTokens();
-      this.delegationTokens = Optional.of(tokens);
-      tokens.bindToFileSystem(getCanonicalUri(),
-          createStoreContext(),
-          createDelegationOperations());
-      tokens.init(conf);
-      tokens.start();
-      // switch to the DT provider and bypass all other configured
-      // providers.
-      if (tokens.isBoundToDT()) {
-        // A DT was retrieved.
-        LOG.debug("Using existing delegation token");
-        // and use the encryption settings from that client, whatever they were
-      } else {
-        LOG.debug("No delegation token for this instance");
-      }
-      // Get new credential chain
-      credentials = tokens.getCredentialProviders();
-      // and any encryption secrets which came from a DT
-      tokens.getEncryptionSecrets()
-          .ifPresent(this::setEncryptionSecrets);
-      // and update the UA field with any diagnostics provided by
-      // the DT binding.
-      uaSuffix = tokens.getUserAgentField();
-    } else {
-      // DT support is disabled, so create the normal credential chain
-      credentials = createAWSCredentialProviderSet(name, conf);
-    }
-    LOG.debug("Using credential provider {}", credentials);
-    Class<? extends S3ClientFactory> s3ClientFactoryClass = conf.getClass(
-        S3_CLIENT_FACTORY_IMPL, DEFAULT_S3_CLIENT_FACTORY_IMPL,
-        S3ClientFactory.class);
-
-    String endpoint = accessPoint == null
-        ? conf.getTrimmed(ENDPOINT, DEFAULT_ENDPOINT)
-        : accessPoint.getEndpoint();
-
-    S3ClientFactory.S3ClientCreationParameters parameters = null;
-    parameters = new S3ClientFactory.S3ClientCreationParameters()
-        .withCredentialSet(credentials)
-        .withEndpoint(endpoint)
-        .withMetrics(statisticsContext.newStatisticsFromAwsSdk())
-        .withPathStyleAccess(conf.getBoolean(PATH_STYLE_ACCESS, false))
-        .withUserAgentSuffix(uaSuffix)
-        .withRequestHandlers(auditManager.createRequestHandlers());
-
-    s3 = ReflectionUtils.newInstance(s3ClientFactoryClass, conf)
-        .createS3Client(getUri(),
-            parameters);
-  }
-
-  /**
-   * Initialize and launch the audit manager and service.
-   * As this takes the FS IOStatistics store, it must be invoked
-   * after instrumentation is initialized.
-   * @throws IOException failure to instantiate/initialize.
-   */
-  protected void initializeAuditService() throws IOException {
-    auditManager = AuditIntegration.createAndStartAuditManager(
-        getConf(),
-        instrumentation.createMetricsUpdatingStore());
-  }
-
-  /**
-   * The audit manager.
-   * @return the audit manager
-   */
-  @InterfaceAudience.Private
-  public AuditManagerS3A getAuditManager() {
-    return auditManager;
-  }
-
-  /**
-   * Get the auditor; valid once initialized.
-   * @return the auditor.
-   */
-  @InterfaceAudience.Private
-  public OperationAuditor getAuditor() {
-    return getAuditManager().getAuditor();
-  }
-
-  /**
-   * Get the active audit span.
-   * @return the span.
-   */
-  @InterfaceAudience.Private
-  @Override
-  public AuditSpanS3A getActiveAuditSpan() {
-    return getAuditManager().getActiveAuditSpan();
-  }
-
-  /**
-   * Get the audit span source; allows for components like the committers
-   * to have a source of spans without being hard coded to the FS only.
-   * @return the source of spans -base implementation is this instance.
-   */
-  @InterfaceAudience.Private
-  public AuditSpanSource getAuditSpanSource() {
-    return this;
-  }
-
-  /**
-   * Start an operation; this informs the audit service of the event
-   * and then sets it as the active span.
-   * @param operation operation name.
-   * @param path1 first path of operation
-   * @param path2 second path of operation
-   * @return a span for the audit
-   * @throws IOException failure
-   */
-  public AuditSpanS3A createSpan(String operation,
-      @Nullable String path1,
-      @Nullable String path2)
-      throws IOException {
-
-    return getAuditManager().createSpan(operation, path1, path2);
-  }
+//  /**
+//   * The audit manager.
+//   * @return the audit manager
+//   */
+//  @InterfaceAudience.Private
+//  public AuditManagerS3A getAuditManager() {
+//    return auditManager;
+//  }
+//
+//  /**
+//   * Get the auditor; valid once initialized.
+//   * @return the auditor.
+//   */
+//  @InterfaceAudience.Private
+//  public OperationAuditor getAuditor() {
+//    return getAuditManager().getAuditor();
+//  }
+//
+//  /**
+//   * Get the active audit span.
+//   * @return the span.
+//   */
+//  @InterfaceAudience.Private
+//  @Override
+//  public AuditSpanS3A getActiveAuditSpan() {
+//    return getAuditManager().getActiveAuditSpan();
+//  }
+//
+//  /**
+//   * Get the audit span source; allows for components like the committers
+//   * to have a source of spans without being hard coded to the FS only.
+//   * @return the source of spans -base implementation is this instance.
+//   */
+//  @InterfaceAudience.Private
+//  public AuditSpanSource getAuditSpanSource() {
+//    return this;
+//  }
+//
+//  /**
+//   * Start an operation; this informs the audit service of the event
+//   * and then sets it as the active span.
+//   * @param operation operation name.
+//   * @param path1 first path of operation
+//   * @param path2 second path of operation
+//   * @return a span for the audit
+//   * @throws IOException failure
+//   */
+//  public AuditSpanS3A createSpan(String operation,
+//      @Nullable String path1,
+//      @Nullable String path2)
+//      throws IOException {
+//
+//    return getAuditManager().createSpan(operation, path1, path2);
+//  }
 
   /**
    * Build the request factory.
@@ -733,7 +738,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
         .withCannedACL(getCannedACL())
         .withEncryptionSecrets(requireNonNull(encryptionSecrets))
         .withMultipartPartCountLimit(partCountLimit)
-        .withRequestPreparer(getAuditManager()::requestCreated)
+        //.withRequestPreparer(getAuditManager()::requestCreated)
         .build();
   }
 
@@ -861,13 +866,16 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   }
 
   /**
-   * Set the URI field through {@link S3xLoginHelper}.
+   * Set the URI field through {@link S3xLoginHelper} and
+   * optionally {@link #canonicalizeUri(URI)}
    * Exported for testing.
-   * @param uri filesystem URI.
+   * @param fsUri filesystem URI.
+   * @param canonicalize true if the URI should be canonicalized.
    */
   @VisibleForTesting
-  protected void setUri(URI uri) {
-    this.uri = S3xLoginHelper.buildFSURI(uri);
+  protected void setUri(URI fsUri, boolean canonicalize) {
+    URI u = S3xLoginHelper.buildFSURI(fsUri);
+    this.uri = canonicalize ? u : canonicalizeUri(u);
   }
 
   @Override
@@ -926,13 +934,12 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
    */
   @Retries.RetryTranslated
   public String getBucketLocation(String bucketName) throws IOException {
-    final String region = trackDurationAndSpan(
-        STORE_EXISTS_PROBE, bucketName, null, () ->
+    final String region =
             invoker.retry("getBucketLocation()", bucketName, true, () ->
                 // If accessPoint then region is known from Arn
                 accessPoint != null
                     ? accessPoint.getRegion()
-                    : s3.getBucketLocation(bucketName)));
+                    : s3.getBucketLocation(bucketName));
     return fixBucketRegion(region);
   }
 
@@ -2837,7 +2844,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
    * Wait for an upload to complete.
    * If the waiting for completion is interrupted, the upload will be
    * aborted before an {@code InterruptedIOException} is thrown.
-   * @param upload upload to wait for
+   * @param uploadInfo upload to wait for
    * @param key destination key
    * @return the upload result
    * @throws InterruptedIOException if the blocking was interrupted.
@@ -2906,6 +2913,39 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   public String getCanonicalServiceName() {
     // Does not support Token
     return null;
+  }
+
+  /**
+   * Build the AWS policy for restricted access to the resources needed
+   * by this bucket.
+   * The policy generated includes S3 access, S3Guard access
+   * if needed, and KMS operations.
+   * @param access access level desired.
+   * @return a policy for use in roles
+   */
+  //@Override
+  @InterfaceAudience.Private
+  public List<RoleModel.Statement> listAWSPolicyRules(
+          final Set<AWSPolicyProvider.AccessLevel> access) {
+    if (access.isEmpty()) {
+      return Collections.emptyList();
+    }
+    List<RoleModel.Statement> statements = new ArrayList<>(
+            allowS3Operations(bucket,
+                    access.contains(AWSPolicyProvider.AccessLevel.WRITE)
+                            || access.contains(AWSPolicyProvider.AccessLevel.ADMIN)));
+
+    // no attempt is made to qualify KMS access; there's no
+    // way to predict read keys, and not worried about granting
+    // too much encryption access.
+    statements.add(STATEMENT_ALLOW_SSE_KMS_RW);
+
+    // add any metastore policies
+    if (metadataStore instanceof AWSPolicyProvider) {
+      statements.addAll(
+              ((AWSPolicyProvider) metadataStore).listAWSPolicyRules(access));
+    }
+    return statements;
   }
 
   /**
