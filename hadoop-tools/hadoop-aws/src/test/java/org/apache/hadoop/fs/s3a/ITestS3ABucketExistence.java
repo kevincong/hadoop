@@ -198,7 +198,7 @@ public class ITestS3ABucketExistence extends AbstractS3ATestBase {
 
   @Override
   public void teardown() throws Exception {
-    IOUtils.cleanupWithLogger(getLogger(), fs);
+    IOUtils.cleanupWithLogger(null, fs);
     super.teardown();
   }
 }

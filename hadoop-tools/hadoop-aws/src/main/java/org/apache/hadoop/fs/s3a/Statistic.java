@@ -81,6 +81,7 @@ public enum Statistic {
       "Calls of rename()"),
   OBJECT_COPY_REQUESTS("object_copy_requests", "Object copy requests"),
   OBJECT_DELETE_REQUESTS("object_delete_requests", "Object delete requests"),
+  OBJECT_LIST_REQUEST("object_list_request", "Count of object listings made"),
   OBJECT_LIST_REQUESTS("object_list_requests",
       "Number of object listings made"),
   OBJECT_CONTINUE_LIST_REQUESTS("object_continue_list_requests",

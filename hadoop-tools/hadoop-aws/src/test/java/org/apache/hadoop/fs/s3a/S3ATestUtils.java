@@ -22,14 +22,11 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileContext;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.*;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.s3a.auth.delegation.EncryptionSecrets;
 import org.apache.hadoop.fs.s3a.commit.CommitConstants;
+import org.apache.hadoop.fs.s3a.impl.StatusProbeEnum;
 import org.apache.hadoop.fs.s3a.s3guard.DynamoDBClientFactory;
 import org.apache.hadoop.fs.s3a.s3guard.DynamoDBLocalClientFactory;
 import org.apache.hadoop.fs.s3a.s3guard.S3Guard;
@@ -48,12 +45,17 @@ import java.net.URISyntaxException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.skip;
 import static org.apache.hadoop.fs.s3a.FailureInjectionPolicy.*;
 import static org.apache.hadoop.fs.s3a.S3ATestConstants.*;
 import static org.apache.hadoop.fs.s3a.Constants.*;
+import static org.apache.hadoop.fs.s3a.S3AUtils.buildEncryptionSecrets;
 import static org.apache.hadoop.fs.s3a.S3AUtils.propagateBucketOptions;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.junit.Assert.*;
@@ -991,8 +993,19 @@ public final class S3ATestUtils {
 
     return fs.innerGetFileStatus(
         path,
-        needEmptyDirectoryFlag,
-        probes);
+        needEmptyDirectoryFlag);
+  }
+
+  /**
+   * Get the name of the test bucket.
+   * @param conf configuration to scan.
+   * @return the bucket name from the config.
+   * @throws NullPointerException: no test bucket
+   */
+  public static String getTestBucketName(final Configuration conf) {
+    String bucket = checkNotNull(conf.get(TEST_FS_S3A_NAME),
+            "No test bucket");
+    return URI.create(bucket).getHost();
   }
 
   /**

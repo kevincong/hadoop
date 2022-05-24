@@ -85,7 +85,7 @@ public class MockS3AFileSystem extends S3AFileSystem {
       Pair<StagingTestBase.ClientResults, StagingTestBase.ClientErrors> outcome) {
     this.mock = mock;
     this.outcome = outcome;
-    setUri(FS_URI);
+    setUri(FS_URI, false);
     setBucket(BUCKET);
   }
 

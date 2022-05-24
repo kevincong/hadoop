@@ -113,6 +113,12 @@ public final class Constants {
   //use a custom endpoint?
   public static final String ENDPOINT = "fs.s3a.endpoint";
 
+  /**
+   * The central endpoint :{@value}.
+   */
+  public static final String CENTRAL_ENDPOINT = "s3.amazonaws.com";
+
+
   //Enable path style access? Overrides default virtual hosting
   public static final String PATH_STYLE_ACCESS = "fs.s3a.path.style.access";
 
@@ -311,6 +317,18 @@ public final class Constants {
           "fs.s3a.encryption.key";
 
   /**
+   * List of custom Signers. The signer class will be loaded, and the signer
+   * name will be associated with this signer class in the S3 SDK.
+   * Examples
+   * CustomSigner {@literal ->} 'CustomSigner:org.apache...CustomSignerClass'
+   * CustomSigners {@literal ->} 'CSigner1:CSigner1Class,CSigner2:CSigner2Class'
+   * Initializer {@literal ->} 'CSigner1:CSigner1Class:CSigner1InitializerClass'
+   * With Existing {@literal ->} 'AWS4Signer,CSigner1,CSigner2:CSigner2Class'
+   */
+  public static final String CUSTOM_SIGNERS = "fs.s3a.custom.signers";
+
+
+  /**
    * The original key name. Never used in ASF releases,
    * but did get into downstream products.
    */
@@ -319,6 +337,10 @@ public final class Constants {
 
   //override signature algorithm used for signing requests
   public static final String SIGNING_ALGORITHM = "fs.s3a.signing-algorithm";
+
+  public static final String SIGNING_ALGORITHM_S3 =
+          "fs.s3a." + Constants.AWS_SERVICE_IDENTIFIER_S3.toLowerCase()
+                  + ".signing-algorithm";
 
   public static final String S3N_FOLDER_SUFFIX = "_$folder$";
   public static final String FS_S3A_BLOCK_SIZE = "fs.s3a.block.size";
@@ -338,6 +360,13 @@ public final class Constants {
   public static final String METADATASTORE_AUTHORITATIVE =
       "fs.s3a.metadatastore.authoritative";
   public static final boolean DEFAULT_METADATASTORE_AUTHORITATIVE = false;
+
+  /**
+   * Bucket validation parameter which can be set by client. This will be
+   * used in {@code S3AFileSystem.initialize(URI, Configuration)}.
+   * Value: {@value}
+   */
+  public static final String S3A_BUCKET_PROBE = "fs.s3a.bucket.probe";
 
   /** read ahead buffer size to prevent connection re-establishments. */
   public static final String READAHEAD_RANGE = "fs.s3a.readahead.range";
