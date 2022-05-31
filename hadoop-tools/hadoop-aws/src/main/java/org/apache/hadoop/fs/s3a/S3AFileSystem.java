@@ -27,17 +27,7 @@ import java.net.URI;
 import java.nio.file.AccessDeniedException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -102,9 +92,8 @@ import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.s3a.api.RequestFactory;
 import org.apache.hadoop.fs.s3a.auth.RoleModel;
-import org.apache.hadoop.fs.s3a.auth.delegation.AWSPolicyProvider;
-import org.apache.hadoop.fs.s3a.auth.delegation.DelegationOperations;
-import org.apache.hadoop.fs.s3a.auth.delegation.EncryptionSecrets;
+import org.apache.hadoop.fs.s3a.auth.delegation.*;
+import org.apache.hadoop.fs.s3a.auth.SignerManager;
 import org.apache.hadoop.fs.s3a.commit.CommitConstants;
 import org.apache.hadoop.fs.s3a.commit.PutTracker;
 import org.apache.hadoop.fs.s3a.commit.MagicCommitIntegration;
@@ -119,6 +108,8 @@ import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.fs.store.EtagChecksum;
 import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.util.BlockingThreadPoolExecutorService;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -149,9 +140,7 @@ import static org.apache.hadoop.fs.s3a.auth.delegation.S3ADelegationTokens.hasDe
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.AP_INACCESSIBLE;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.AP_REQUIRED_EXCEPTION;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.ARN_BUCKET_OPTION;
-import static org.apache.hadoop.fs.s3a.impl.InternalConstants.CSE_PADDING_LENGTH;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.DEFAULT_UPLOAD_PART_COUNT_LIMIT;
-import static org.apache.hadoop.fs.s3a.impl.InternalConstants.DELETE_CONSIDERED_IDEMPOTENT;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.SC_403;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.SC_404;
 import static org.apache.hadoop.fs.s3a.impl.InternalConstants.UPLOAD_PART_COUNT_LIMIT;
@@ -184,7 +173,7 @@ import static org.apache.hadoop.fs.s3a.impl.NetworkBinding.fixBucketRegion;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
-public class S3AFileSystem extends FileSystem implements StreamCapabilities {
+public class S3AFileSystem extends FileSystem implements StreamCapabilities, AWSPolicyProvider, DelegationTokenProvider {
   /**
    * Default blocksize as used in blocksize and FS status queries.
    */
@@ -247,6 +236,12 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
 
   // The maximum number of entries that can be deleted in any call to s3
   private static final int MAX_ENTRIES_TO_DELETE = 1000;
+
+  /** Delegation token integration; non-empty when DT support is enabled. */
+  private Optional<S3ADelegationTokens> delegationTokens = Optional.empty();
+
+  /** Principal who created the FS; recorded during initialization. */
+  private UserGroupInformation owner;
   private String blockOutputBuffer;
   private S3ADataBlocks.BlockFactory blockFactory;
   private int blockOutputActiveBlocks;
@@ -255,7 +250,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   private MagicCommitIntegration committerIntegration;
 
   private AWSCredentialProviderList credentials;
-  //private SignerManager signerManager;
+  private SignerManager signerManager;
 
   /**
    * Page size for deletions.
@@ -343,11 +338,13 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       conf = ProviderUtils.excludeIncompatibleCredentialProviders(
           conf, S3AFileSystem.class);
       String arn = String.format(ARN_BUCKET_OPTION, bucket);
+      System.out.println("aaaaaarn is: " + arn);
       String configuredArn = conf.getTrimmed(arn, "");
       if (!configuredArn.isEmpty()) {
         accessPoint = ArnResource.accessPointFromArn(configuredArn);
         LOG.info("Using AccessPoint ARN \"{}\" for bucket {}", configuredArn, bucket);
         bucket = accessPoint.getFullArn();
+        System.out.println("bbbbbbbbbucket is: " + bucket);
       } else if (conf.getBoolean(AWS_S3_ACCESSPOINT_REQUIRED, false)) {
         LOG.warn("Access Point usage is required because \"{}\" is enabled," +
             " but not configured for the bucket: {}", AWS_S3_ACCESSPOINT_REQUIRED, bucket);
@@ -378,6 +375,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
           buildEncryptionSecrets(bucket, conf));
 
       // Username is the current user at the time the FS was instantiated.
+      owner = UserGroupInformation.getCurrentUser();
       username = UserGroupInformation.getCurrentUser().getShortUserName();
       workingDir = new Path("/user", username)
           .makeQualified(this.uri, this.getWorkingDirectory());
@@ -386,8 +384,6 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       Class<? extends S3ClientFactory> s3ClientFactoryClass = conf.getClass(
           S3_CLIENT_FACTORY_IMPL, DEFAULT_S3_CLIENT_FACTORY_IMPL,
           S3ClientFactory.class);
-      s3 = ReflectionUtils.newInstance(s3ClientFactoryClass, conf)
-          .createS3Client(name);
       invoker = new Invoker(new S3ARetryPolicy(getConf()), onRetry);
       s3guardInvoker = new Invoker(new S3GuardExistsRetryPolicy(getConf()),
           onRetry);
@@ -439,6 +435,15 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
             " access points. Upgrading to V2");
         useListV1 = false;
       }
+
+      signerManager = new SignerManager(bucket, this, conf, owner);
+      signerManager.initCustomSigners();
+
+      // creates the AWS client, including overriding auth chain if
+      // the FS came with a DT
+      // this may do some patching of the configuration (e.g. setting
+      // the encryption algorithms)
+      bindAWSClient(name, delegationTokensEnabled);
 
       initTransferManager();
 
@@ -571,78 +576,42 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     return listing;
   }
 
-//  /**
-//   * Set up the client bindings.
-//   * If delegation tokens are enabled, the FS first looks for a DT
-//   * ahead of any other bindings;.
-//   * If there is a DT it uses that to do the auth
-//   * and switches to the DT authenticator automatically (and exclusively)
-//   * @param name URI of the FS
-//   * @param dtEnabled are delegation tokens enabled?
-//   * @throws IOException failure.
-//   */
-//  private void bindAWSClient(URI name, boolean dtEnabled) throws IOException {
-//    Configuration conf = getConf();
-//    credentials = null;
-//    String uaSuffix = "";
-//
-//    if (dtEnabled) {
-//      // Delegation support.
-//      // Create and start the DT integration.
-//      // Then look for an existing DT for this bucket, switch to authenticating
-//      // with it if so.
-//
-//      LOG.debug("Using delegation tokens");
-//      S3ADelegationTokens tokens = new S3ADelegationTokens();
-//      this.delegationTokens = Optional.of(tokens);
-//      tokens.bindToFileSystem(getCanonicalUri(),
-//          createStoreContext(),
-//          createDelegationOperations());
-//      tokens.init(conf);
-//      tokens.start();
-//      // switch to the DT provider and bypass all other configured
-//      // providers.
-//      if (tokens.isBoundToDT()) {
-//        // A DT was retrieved.
-//        LOG.debug("Using existing delegation token");
-//        // and use the encryption settings from that client, whatever they were
-//      } else {
-//        LOG.debug("No delegation token for this instance");
-//      }
-//      // Get new credential chain
-//      credentials = tokens.getCredentialProviders();
-//      // and any encryption secrets which came from a DT
-//      tokens.getEncryptionSecrets()
-//          .ifPresent(this::setEncryptionSecrets);
-//      // and update the UA field with any diagnostics provided by
-//      // the DT binding.
-//      uaSuffix = tokens.getUserAgentField();
-//    } else {
-//      // DT support is disabled, so create the normal credential chain
-//      credentials = createAWSCredentialProviderSet(name, conf);
-//    }
-//    LOG.debug("Using credential provider {}", credentials);
-//    Class<? extends S3ClientFactory> s3ClientFactoryClass = conf.getClass(
-//        S3_CLIENT_FACTORY_IMPL, DEFAULT_S3_CLIENT_FACTORY_IMPL,
-//        S3ClientFactory.class);
-//
-//    String endpoint = accessPoint == null
-//        ? conf.getTrimmed(ENDPOINT, DEFAULT_ENDPOINT)
-//        : accessPoint.getEndpoint();
-//
-//    S3ClientFactory.S3ClientCreationParameters parameters = null;
-//    parameters = new S3ClientFactory.S3ClientCreationParameters()
-//        .withCredentialSet(credentials)
-//        .withEndpoint(endpoint)
-//        .withMetrics(statisticsContext.newStatisticsFromAwsSdk())
-//        .withPathStyleAccess(conf.getBoolean(PATH_STYLE_ACCESS, false))
-//        .withUserAgentSuffix(uaSuffix)
-//        .withRequestHandlers(auditManager.createRequestHandlers());
-//
-//    s3 = ReflectionUtils.newInstance(s3ClientFactoryClass, conf)
-//        .createS3Client(getUri(),
-//            parameters);
-//  }
+  /**
+   * Set up the client bindings.
+   * If delegation tokens are enabled, the FS first looks for a DT
+   * ahead of any other bindings;.
+   * If there is a DT it uses that to do the auth
+   * and switches to the DT authenticator automatically (and exclusively)
+   * @param name URI of the FS
+   * @param dtEnabled are delegation tokens enabled?
+   * @throws IOException failure.
+   */
+  private void bindAWSClient(URI name, boolean dtEnabled) throws IOException {
+    Configuration conf = getConf();
+    credentials = null;
+    String uaSuffix = "";
+
+    credentials = createAWSCredentialProviderSet(name, conf);
+    LOG.debug("Using credential provider {}", credentials);
+    Class<? extends S3ClientFactory> s3ClientFactoryClass = conf.getClass(
+        S3_CLIENT_FACTORY_IMPL, DEFAULT_S3_CLIENT_FACTORY_IMPL,
+        S3ClientFactory.class);
+
+    String endpoint = accessPoint == null
+        ? conf.getTrimmed(ENDPOINT, DEFAULT_ENDPOINT)
+        : accessPoint.getEndpoint();
+
+    S3ClientFactory.S3ClientCreationParameters parameters = null;
+    parameters = new S3ClientFactory.S3ClientCreationParameters()
+        .withCredentialSet(credentials)
+        .withEndpoint(endpoint)
+        .withPathStyleAccess(conf.getBoolean(PATH_STYLE_ACCESS, false))
+        .withUserAgentSuffix(uaSuffix);
+
+    s3 = ReflectionUtils.newInstance(s3ClientFactoryClass, conf)
+        .createS3Client(getUri(),
+            parameters);
+  }
 
 //  /**
 //   * Initialize and launch the audit manager and service.
@@ -1493,6 +1462,11 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     return true;
   }
 
+  @Override public Token<? extends TokenIdentifier> getFsDelegationToken()
+          throws IOException {
+    return getDelegationToken(null);
+  }
+
   /**
    * Low-level call to get at the object metadata.
    * @param path path to the object
@@ -1648,6 +1622,9 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     ObjectMetadata meta = invoker.retryUntranslated("GET " + key, true,
         () -> {
           incrementStatistic(OBJECT_METADATA_REQUESTS);
+          System.out.println(request.getBucketName());
+          System.out.println(request.getKey());
+          System.out.println(request.getVersionId());
           return s3.getObjectMetadata(request);
         });
     incrementReadOperations();
@@ -3773,4 +3750,5 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       return false;
     }
   }
+
 }

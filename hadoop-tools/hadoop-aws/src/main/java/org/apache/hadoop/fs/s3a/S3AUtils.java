@@ -18,10 +18,7 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.amazonaws.AbortedException;
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.SdkBaseException;
+import com.amazonaws.*;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.EnvironmentVariableCredentialsProvider;
 import com.amazonaws.auth.InstanceProfileCredentialsProvider;
@@ -45,11 +42,13 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.s3a.auth.delegation.EncryptionSecrets;
+import org.apache.hadoop.fs.s3a.impl.NetworkBinding;
 import org.apache.hadoop.fs.s3native.S3xLoginHelper;
 import org.apache.hadoop.net.ConnectTimeoutException;
 import org.apache.hadoop.security.ProviderUtils;
 
 import com.google.common.collect.Lists;
+import org.apache.hadoop.util.VersionInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,6 +71,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.commons.lang3.StringUtils.isEmpty;
 import static org.apache.hadoop.fs.s3a.Constants.*;
@@ -781,7 +781,47 @@ public final class S3AUtils {
     return getPassword(conf, baseKey, initialVal);
   }
 
+  /**
+   * Get a password from a configuration, including JCEKS files, handling both
+   * the absolute key and bucket override.
+   * @param bucket bucket or "" if none known
+   * @param conf configuration
+   * @param baseKey base key to look up, e.g "fs.s3a.secret.key"
+   * @param overrideVal override value: if non empty this is used instead of
+   * querying the configuration.
+   * @param defVal value to return if there is no password
+   * @return a password or the value of defVal.
+   * @throws IOException on any IO problem
+   * @throws IllegalArgumentException bad arguments
+   */
+  public static String lookupPassword(
+          String bucket,
+          Configuration conf,
+          String baseKey,
+          String overrideVal,
+          String defVal)
+          throws IOException {
+    String initialVal;
+    Preconditions.checkArgument(baseKey.startsWith(FS_S3A_PREFIX),
+            "%s does not start with $%s", baseKey, FS_S3A_PREFIX);
+    // if there's a bucket, work with it
+    if (StringUtils.isNotEmpty(bucket)) {
+      String subkey = baseKey.substring(FS_S3A_PREFIX.length());
+      String shortBucketKey = String.format(
+              BUCKET_PATTERN, bucket, subkey);
+      String longBucketKey = String.format(
+              BUCKET_PATTERN, bucket, baseKey);
 
+      // set from the long key unless overidden.
+      initialVal = getPassword(conf, longBucketKey, overrideVal);
+      // then override from the short one if it is set
+      initialVal = getPassword(conf, shortBucketKey, initialVal);
+    } else {
+      // no bucket, make the initial value the override value
+      initialVal = overrideVal;
+    }
+    return getPassword(conf, baseKey, initialVal, defVal);
+  }
 
   /**
    * Get a password from a configuration, or, if a value is passed in,
@@ -1082,6 +1122,193 @@ public final class S3AUtils {
     }
   }
 
+  /**
+   * Create a new AWS {@code ClientConfiguration}. All clients to AWS services
+   * <i>MUST</i> use this or the equivalents for the specific service for
+   * consistent setup of connectivity, UA, proxy settings.
+   *
+   * @param conf The Hadoop configuration
+   * @param bucket Optional bucket to use to look up per-bucket proxy secrets
+   * @param awsServiceIdentifier a string representing the AWS service (S3,
+   * DDB, etc) for which the ClientConfiguration is being created.
+   * @return new AWS client configuration
+   * @throws IOException problem creating AWS client configuration
+   */
+  public static ClientConfiguration createAwsConf(Configuration conf,
+                                                  String bucket, String awsServiceIdentifier)
+          throws IOException {
+    final ClientConfiguration awsConf = new ClientConfiguration();
+    initConnectionSettings(conf, awsConf);
+    initProxySupport(conf, bucket, awsConf);
+    initUserAgent(conf, awsConf);
+    if (StringUtils.isNotEmpty(awsServiceIdentifier)) {
+      String configKey = null;
+      switch (awsServiceIdentifier) {
+        case AWS_SERVICE_IDENTIFIER_S3:
+          configKey = SIGNING_ALGORITHM_S3;
+          break;
+        case AWS_SERVICE_IDENTIFIER_DDB:
+          configKey = SIGNING_ALGORITHM_DDB;
+          break;
+        case AWS_SERVICE_IDENTIFIER_STS:
+          configKey = SIGNING_ALGORITHM_STS;
+          break;
+        default:
+          // Nothing to do. The original signer override is already setup
+      }
+      if (configKey != null) {
+        String signerOverride = conf.getTrimmed(configKey, "");
+        if (!signerOverride.isEmpty()) {
+          LOG.debug("Signer override for {}} = {}", awsServiceIdentifier,
+                  signerOverride);
+          awsConf.setSignerOverride(signerOverride);
+        }
+      }
+    }
+    return awsConf;
+  }
+
+  /**
+   * Initializes all AWS SDK settings related to connection management.
+   *
+   * @param conf Hadoop configuration
+   * @param awsConf AWS SDK configuration
+   *
+   * @throws IOException if there was an error initializing the protocol
+   *                     settings
+   */
+  public static void initConnectionSettings(Configuration conf,
+                                            ClientConfiguration awsConf) throws IOException {
+    awsConf.setMaxConnections(intOption(conf, MAXIMUM_CONNECTIONS,
+            DEFAULT_MAXIMUM_CONNECTIONS, 1));
+    initProtocolSettings(conf, awsConf);
+    awsConf.setMaxErrorRetry(intOption(conf, MAX_ERROR_RETRIES,
+            DEFAULT_MAX_ERROR_RETRIES, 0));
+    awsConf.setConnectionTimeout(intOption(conf, ESTABLISH_TIMEOUT,
+            DEFAULT_ESTABLISH_TIMEOUT, 0));
+    awsConf.setSocketTimeout(intOption(conf, SOCKET_TIMEOUT,
+            DEFAULT_SOCKET_TIMEOUT, 0));
+    int sockSendBuffer = intOption(conf, SOCKET_SEND_BUFFER,
+            DEFAULT_SOCKET_SEND_BUFFER, 2048);
+    int sockRecvBuffer = intOption(conf, SOCKET_RECV_BUFFER,
+            DEFAULT_SOCKET_RECV_BUFFER, 2048);
+    long requestTimeoutMillis = conf.getTimeDuration(REQUEST_TIMEOUT,
+            DEFAULT_REQUEST_TIMEOUT, TimeUnit.SECONDS);
+
+    if (requestTimeoutMillis > Integer.MAX_VALUE) {
+      LOG.debug("Request timeout is too high({} ms). Setting to {} ms instead",
+              requestTimeoutMillis, Integer.MAX_VALUE);
+      requestTimeoutMillis = Integer.MAX_VALUE;
+    }
+    awsConf.setRequestTimeout((int) requestTimeoutMillis);
+    awsConf.setSocketBufferSizeHints(sockSendBuffer, sockRecvBuffer);
+    String signerOverride = conf.getTrimmed(SIGNING_ALGORITHM, "");
+    if (!signerOverride.isEmpty()) {
+      LOG.debug("Signer override = {}", signerOverride);
+      awsConf.setSignerOverride(signerOverride);
+    }
+  }
+
+  /**
+   * Initializes AWS SDK proxy support in the AWS client configuration
+   * if the S3A settings enable it.
+   *
+   * @param conf Hadoop configuration
+   * @param bucket Optional bucket to use to look up per-bucket proxy secrets
+   * @param awsConf AWS SDK configuration to update
+   * @throws IllegalArgumentException if misconfigured
+   * @throws IOException problem getting username/secret from password source.
+   */
+  public static void initProxySupport(Configuration conf,
+                                      String bucket,
+                                      ClientConfiguration awsConf) throws IllegalArgumentException,
+          IOException {
+    String proxyHost = conf.getTrimmed(PROXY_HOST, "");
+    int proxyPort = conf.getInt(PROXY_PORT, -1);
+    if (!proxyHost.isEmpty()) {
+      awsConf.setProxyHost(proxyHost);
+      if (proxyPort >= 0) {
+        awsConf.setProxyPort(proxyPort);
+      } else {
+        if (conf.getBoolean(SECURE_CONNECTIONS, DEFAULT_SECURE_CONNECTIONS)) {
+          LOG.warn("Proxy host set without port. Using HTTPS default 443");
+          awsConf.setProxyPort(443);
+        } else {
+          LOG.warn("Proxy host set without port. Using HTTP default 80");
+          awsConf.setProxyPort(80);
+        }
+      }
+      final String proxyUsername = lookupPassword(bucket, conf, PROXY_USERNAME,
+              null, null);
+      final String proxyPassword = lookupPassword(bucket, conf, PROXY_PASSWORD,
+              null, null);
+      if ((proxyUsername == null) != (proxyPassword == null)) {
+        String msg = "Proxy error: " + PROXY_USERNAME + " or " +
+                PROXY_PASSWORD + " set without the other.";
+        LOG.error(msg);
+        throw new IllegalArgumentException(msg);
+      }
+      awsConf.setProxyUsername(proxyUsername);
+      awsConf.setProxyPassword(proxyPassword);
+      awsConf.setProxyDomain(conf.getTrimmed(PROXY_DOMAIN));
+      awsConf.setProxyWorkstation(conf.getTrimmed(PROXY_WORKSTATION));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Using proxy server {}:{} as user {} with password {} on " +
+                        "domain {} as workstation {}", awsConf.getProxyHost(),
+                awsConf.getProxyPort(),
+                String.valueOf(awsConf.getProxyUsername()),
+                awsConf.getProxyPassword(), awsConf.getProxyDomain(),
+                awsConf.getProxyWorkstation());
+      }
+    } else if (proxyPort >= 0) {
+      String msg =
+              "Proxy error: " + PROXY_PORT + " set without " + PROXY_HOST;
+      LOG.error(msg);
+      throw new IllegalArgumentException(msg);
+    }
+  }
+
+  /**
+   * Initializes the connection protocol settings when connecting to S3 (e.g.
+   * either HTTP or HTTPS). If secure connections are enabled, this method
+   * will load the configured SSL providers.
+   *
+   * @param conf Hadoop configuration
+   * @param awsConf AWS SDK configuration
+   *
+   * @throws IOException if there is an error initializing the configured
+   *                     {@link javax.net.ssl.SSLSocketFactory}
+   */
+  private static void initProtocolSettings(Configuration conf,
+                                           ClientConfiguration awsConf) throws IOException {
+    boolean secureConnections = conf.getBoolean(SECURE_CONNECTIONS,
+            DEFAULT_SECURE_CONNECTIONS);
+    awsConf.setProtocol(secureConnections ?  Protocol.HTTPS : Protocol.HTTP);
+//    if (secureConnections) {
+//      NetworkBinding.bindSSLChannelMode(conf, awsConf);
+//    }
+  }
+
+  /**
+   * Initializes the User-Agent header to send in HTTP requests to AWS
+   * services.  We always include the Hadoop version number.  The user also
+   * may set an optional custom prefix to put in front of the Hadoop version
+   * number.  The AWS SDK internally appends its own information, which seems
+   * to include the AWS SDK version, OS and JVM version.
+   *
+   * @param conf Hadoop configuration
+   * @param awsConf AWS SDK configuration to update
+   */
+  private static void initUserAgent(Configuration conf,
+                                    ClientConfiguration awsConf) {
+    String userAgent = "Hadoop " + VersionInfo.getVersion();
+    String userAgentPrefix = conf.getTrimmed(USER_AGENT_PREFIX, "");
+    if (!userAgentPrefix.isEmpty()) {
+      userAgent = userAgentPrefix + ", " + userAgent;
+    }
+    LOG.debug("Using User-Agent: {}", userAgent);
+    awsConf.setUserAgentPrefix(userAgent);
+  }
 
   /**
    * An interface for use in lambda-expressions working with

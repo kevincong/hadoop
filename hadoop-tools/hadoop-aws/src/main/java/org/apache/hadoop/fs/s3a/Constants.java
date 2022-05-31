@@ -114,6 +114,22 @@ public final class Constants {
   public static final String ENDPOINT = "fs.s3a.endpoint";
 
   /**
+   * Default value of s3 endpoint: {@value}.
+   * It tells the AWS client to work it out by asking the central
+   * endpoint where the bucket lives; caching that
+   * value in the client for the life of the process.
+   * <p>
+   * Note: previously this constant was defined as
+   * {@link #CENTRAL_ENDPOINT}, however the actual
+   * S3A client code used "" as the default when
+   * {@link #ENDPOINT} was unset.
+   * As core-default.xml also set the endpoint to "",
+   * the empty string has long been the <i>real</i>
+   * default value.
+   */
+  public static final String DEFAULT_ENDPOINT = "";
+
+  /**
    * The central endpoint :{@value}.
    */
   public static final String CENTRAL_ENDPOINT = "s3.amazonaws.com";
@@ -134,6 +150,30 @@ public final class Constants {
   public static final String MAX_ERROR_RETRIES = "fs.s3a.attempts.maximum";
   public static final int DEFAULT_MAX_ERROR_RETRIES = 20;
 
+  /**
+   * Experimental/Unstable feature: should the AWS client library retry
+   * throttle responses before escalating to the S3A code: {@value}.
+   *
+   * When set to false, the S3A connector sees all S3 throttle events,
+   * And so can update it counters and the metrics, and use its own retry
+   * policy.
+   * However, this may have adverse effects on some operations where the S3A
+   * code cannot retry as efficiently as the AWS client library.
+   *
+   * This only applies to S3 operations, not to DynamoDB or other services.
+   */
+  @InterfaceStability.Unstable
+  public static final String EXPERIMENTAL_AWS_INTERNAL_THROTTLING =
+          "fs.s3a.experimental.aws.s3.throttling";
+
+  /**
+   * Default value of {@link #EXPERIMENTAL_AWS_INTERNAL_THROTTLING},
+   * value: {@value}.
+   */
+  @InterfaceStability.Unstable
+  public static final boolean EXPERIMENTAL_AWS_INTERNAL_THROTTLING_DEFAULT =
+          true;
+
   // seconds until we give up trying to establish a connection to s3
   public static final String ESTABLISH_TIMEOUT =
       "fs.s3a.connection.establish.timeout";
@@ -142,6 +182,11 @@ public final class Constants {
   // seconds until we give up on a connection to s3
   public static final String SOCKET_TIMEOUT = "fs.s3a.connection.timeout";
   public static final int DEFAULT_SOCKET_TIMEOUT = 200000;
+
+  // milliseconds until a request is timed-out
+  public static final String REQUEST_TIMEOUT =
+          "fs.s3a.connection.request.timeout";
+  public static final int DEFAULT_REQUEST_TIMEOUT = 0;
 
   // socket send buffer to be used in Amazon client
   public static final String SOCKET_SEND_BUFFER = "fs.s3a.socket.send.buffer";
@@ -341,6 +386,14 @@ public final class Constants {
   public static final String SIGNING_ALGORITHM_S3 =
           "fs.s3a." + Constants.AWS_SERVICE_IDENTIFIER_S3.toLowerCase()
                   + ".signing-algorithm";
+
+  public static final String SIGNING_ALGORITHM_DDB =
+          "fs.s3a." + Constants.AWS_SERVICE_IDENTIFIER_DDB.toLowerCase()
+                  + "signing-algorithm";
+
+  public static final String SIGNING_ALGORITHM_STS =
+          "fs.s3a." + Constants.AWS_SERVICE_IDENTIFIER_STS.toLowerCase()
+                  + "signing-algorithm";
 
   public static final String S3N_FOLDER_SUFFIX = "_$folder$";
   public static final String FS_S3A_BLOCK_SIZE = "fs.s3a.block.size";

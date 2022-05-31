@@ -34,7 +34,7 @@ import com.amazonaws.services.s3.model.Region;
 public class MockS3ClientFactory implements S3ClientFactory {
 
   @Override
-  public AmazonS3 createS3Client(URI name) {
+  public AmazonS3 createS3Client(URI name, S3ClientCreationParameters parameters) {
     String bucket = name.getHost();
     AmazonS3 s3 = mock(AmazonS3.class);
     when(s3.doesBucketExist(bucket)).thenReturn(true);
