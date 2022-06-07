@@ -48,6 +48,7 @@ import javax.annotation.Nullable;
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.Headers;
 import com.amazonaws.services.s3.model.AbortMultipartUploadRequest;
 import com.amazonaws.services.s3.model.CannedAccessControlList;
 import com.amazonaws.services.s3.model.CopyObjectRequest;
@@ -118,6 +119,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.SemaphoredDelegatingExecutor;
 
 import static org.apache.hadoop.fs.s3a.Constants.*;
+import static org.apache.hadoop.fs.s3a.impl.InternalConstants.CSE_PADDING_LENGTH;
 import static org.apache.hadoop.fs.s3a.Invoker.*;
 import static org.apache.hadoop.fs.s3a.S3AUtils.*;
 import static org.apache.hadoop.fs.s3a.Statistic.*;
@@ -185,7 +187,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       LoggerFactory.getLogger("org.apache.hadoop.fs.s3a.S3AFileSystem.Progress");
   private LocalDirAllocator directoryAllocator;
   private CannedAccessControlList cannedACL;
-  private S3AEncryptionMethods serverSideEncryptionAlgorithm;
+  private S3AEncryptionMethods serverSideEncryptionAlgorithm; //TODO: Remove serverSide prefix, it is not applicable anymore
   private S3AInstrumentation instrumentation;
   private final S3AStorageStatistics storageStatistics =
       createStorageStatistics();
@@ -204,6 +206,11 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   private WriteOperationHelper writeHelper;
   private boolean useListV1;
   private MagicCommitIntegration committerIntegration;
+
+  /**
+   * Is this S3A FS instance using S3 client side encryption?
+   */
+  private boolean isCSEEnabled;
 
   /** Add any deprecated keys. */
   @SuppressWarnings("deprecation")
@@ -242,6 +249,13 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     setConf(conf);
     try {
       instrumentation = new S3AInstrumentation(name);
+
+      // If CSE-FTX method is set then CSE is enabled.
+      isCSEEnabled = S3AEncryptionMethods.getMethod(S3AUtils
+          .lookupPassword(conf, SERVER_SIDE_ENCRYPTION_ALGORITHM, null))
+          .equals(S3AEncryptionMethods.CSE_FTX);
+      LOG.debug("Client Side Encryption enabled: {}", isCSEEnabled);
+      setCSEGauge();
 
       // Username is the current user at the time the FS was instantiated.
       username = UserGroupInformation.getCurrentUser().getShortUserName();
@@ -330,6 +344,10 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       blockFactory = S3ADataBlocks.createFactory(this, blockOutputBuffer);
       blockOutputActiveBlocks = intOption(conf,
           FAST_UPLOAD_ACTIVE_BLOCKS, DEFAULT_FAST_UPLOAD_ACTIVE_BLOCKS, 1);
+      // If CSE is enabled, do multipart uploads serially.
+      if (isCSEEnabled) {
+        blockOutputActiveBlocks = 1;
+      }
       LOG.debug("Using S3ABlockOutputStream with buffer = {}; block={};" +
               " queue limit={}",
           blockOutputBuffer, partSize, blockOutputActiveBlocks);
@@ -346,6 +364,16 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       throw translateException("initializing ", new Path(name), e);
     }
 
+  }
+
+  /**
+   * Set the client side encryption gauge to 0 or 1, indicating if CSE is
+   * enabled through the gauge or not.
+   */
+  private void setCSEGauge() {
+    if (isCSEEnabled) {
+      incrementGauge(CLIENT_SIDE_ENCRYPTION_ENABLED, 1L);
+    }
   }
 
   /**
@@ -712,7 +740,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
             new S3ObjectAttributes(bucket,
                 pathToKey(f),
                 serverSideEncryptionAlgorithm,
-                getServerSideEncryptionKey(bucket, getConf())),
+                getS3EncryptionKey(getConf())),
             fileStatus.getLen(),
             s3,
             readAhead,
@@ -776,7 +804,8 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
             blockFactory,
             instrumentation.newOutputStreamStatistics(statistics),
             getWriteOperationHelper(),
-            putTracker),
+            putTracker,
+            isCSEEnabled),
         null);
   }
 
@@ -1035,7 +1064,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
           // including, potentially, the ancestors
           Path childSrc = keyToQualifiedPath(key);
           Path childDst = keyToQualifiedPath(newDstKey);
-          if (objectRepresentsDirectory(key, length)) {
+          if (objectRepresentsDirectory(key)) {
             S3Guard.addMoveDir(metadataStore, srcPaths, dstMetas, childSrc,
                 childDst, username);
           } else {
@@ -1226,7 +1255,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
         new GetObjectMetadataRequest(bucket, key);
     //SSE-C requires to be filled in if enabled for object metadata
     if(S3AEncryptionMethods.SSE_C.equals(serverSideEncryptionAlgorithm) &&
-        isNotBlank(getServerSideEncryptionKey(bucket, getConf()))){
+        isNotBlank(getS3EncryptionKey(getConf()))){
       request.setSSECustomerKey(generateSSECustomerKey());
     }
     ObjectMetadata meta = invoker.retryUntranslated("GET " + key, true,
@@ -2168,12 +2197,20 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       try {
         ObjectMetadata meta = getObjectMetadata(key);
 
-        if (objectRepresentsDirectory(key, meta.getContentLength())) {
+        if (objectRepresentsDirectory(key)) {
           LOG.debug("Found exact file: fake directory");
           return new S3AFileStatus(Tristate.TRUE, path, username);
         } else {
           LOG.debug("Found exact file: normal file");
-          return new S3AFileStatus(meta.getContentLength(),
+          long contentLength = meta.getContentLength();
+          // check if CSE is enabled, then strip padded length.
+          if (isCSEEnabled
+                  && meta.getUserMetaDataOf(Headers.CRYPTO_CEK_ALGORITHM) != null
+                  && contentLength >= CSE_PADDING_LENGTH) {
+            contentLength -= CSE_PADDING_LENGTH;
+          }
+
+          return new S3AFileStatus(contentLength,
               dateToLong(meta.getLastModified()),
               path,
               getDefaultBlockSize(path),
@@ -2193,7 +2230,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
         try {
           ObjectMetadata meta = getObjectMetadata(newKey);
 
-          if (objectRepresentsDirectory(newKey, meta.getContentLength())) {
+          if (objectRepresentsDirectory(newKey)) {
             LOG.debug("Found file (with /): fake directory");
             return new S3AFileStatus(Tristate.TRUE, path, username);
           } else {
@@ -2555,7 +2592,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       req.setSSEAwsKeyManagementParams(generateSSEAwsKeyParams());
       break;
     case SSE_C:
-      if (isNotBlank(getServerSideEncryptionKey(bucket, getConf()))) {
+      if (isNotBlank(getS3EncryptionKey(getConf()))) {
         //at the moment, only supports copy using the same key
         req.setSSECustomerKey(generateSSECustomerKey());
       }
@@ -2573,7 +2610,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       UploadPartRequest request) {
     switch (serverSideEncryptionAlgorithm) {
     case SSE_C:
-      if (isNotBlank(getServerSideEncryptionKey(bucket, getConf()))) {
+      if (isNotBlank(getS3EncryptionKey(getConf()))) {
         request.setSSECustomerKey(generateSSECustomerKey());
       }
       break;
@@ -2606,7 +2643,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       );
       break;
     case SSE_C:
-      if (isNotBlank(getServerSideEncryptionKey(bucket, getConf()))) {
+      if (isNotBlank(getS3EncryptionKey(getConf()))) {
         //at the moment, only supports copy using the same key
         SSECustomerKey customerKey = generateSSECustomerKey();
         copyObjectRequest.setSourceSSECustomerKey(customerKey);
@@ -2623,7 +2660,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       request.setSSEAwsKeyManagementParams(generateSSEAwsKeyParams());
       break;
     case SSE_C:
-      if (isNotBlank(getServerSideEncryptionKey(bucket, getConf()))) {
+      if (isNotBlank(getS3EncryptionKey(getConf()))) {
         request.setSSECustomerKey(generateSSECustomerKey());
       }
       break;
@@ -2647,9 +2684,11 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     //Use specified key, otherwise default to default master aws/s3 key by AWS
     SSEAwsKeyManagementParams sseAwsKeyManagementParams =
         new SSEAwsKeyManagementParams();
-    String encryptionKey = getServerSideEncryptionKey(bucket, getConf());
-    if (isNotBlank(encryptionKey)) {
-      sseAwsKeyManagementParams = new SSEAwsKeyManagementParams(encryptionKey);
+    if (isNotBlank(getS3EncryptionKey(getConf()))) {
+      sseAwsKeyManagementParams =
+        new SSEAwsKeyManagementParams(
+          getS3EncryptionKey(getConf())
+        );
     }
     return sseAwsKeyManagementParams;
   }
@@ -2662,7 +2701,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
   @Retries.OnceExceptionsSwallowed
   private SSECustomerKey generateSSECustomerKey() {
     SSECustomerKey customerKey = new SSECustomerKey(
-        getServerSideEncryptionKey(bucket, getConf()));
+            getS3EncryptionKey(getConf()));
     return customerKey;
   }
 
@@ -2695,7 +2734,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       if (hasMetadataStore()) {
         S3Guard.addAncestors(metadataStore, p, username);
         S3AFileStatus status = createUploadFileStatus(p,
-            S3AUtils.objectRepresentsDirectory(key, length), length,
+            S3AUtils.objectRepresentsDirectory(key), length,
             getDefaultBlockSize(p), username);
         S3Guard.putAndReturn(metadataStore, status, instrumentation);
       }
@@ -2869,7 +2908,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
       sb.append(", blockSize=").append(getDefaultBlockSize());
     }
     sb.append(", multiPartThreshold=").append(multiPartThreshold);
-    if (serverSideEncryptionAlgorithm != null) {
+    if (serverSideEncryptionAlgorithm != null) { // TODO: Remove serverSide prefix (cosmetic)
       sb.append(", serverSideEncryptionAlgorithm='")
           .append(serverSideEncryptionAlgorithm)
           .append('\'');
@@ -2893,6 +2932,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
           .append(instrumentation.dump("{", "=", "} ", true))
           .append("}");
     }
+    sb.append(", ClientSideEncryption=").append(isCSEEnabled);
     sb.append('}');
     return sb.toString();
   }
@@ -3318,5 +3358,13 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities {
     default:
       return false;
     }
+  }
+
+  /**
+   * a method to know if Client side encryption is enabled or not.
+   * @return a boolean stating if CSE is enabled.
+   */
+  public boolean isCSEEnabled() {
+    return isCSEEnabled;
   }
 }

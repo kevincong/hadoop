@@ -209,7 +209,13 @@ public enum Statistic {
       "s3guard_metadatastore_throttle_rate",
       "S3Guard metadata store throttle rate"),
 
-  STORE_IO_THROTTLED("store_io_throttled", "Requests throttled and retried");
+  STORE_IO_THROTTLED("store_io_throttled", "Requests throttled and retried"),
+
+  /* Client side encryption gauge */
+  CLIENT_SIDE_ENCRYPTION_ENABLED(
+          "client_side_encryption_enabled",
+          "gauge to indicate if client side encryption is enabled"
+  );
 
   private static final Map<String, Statistic> SYMBOL_MAP =
       new HashMap<>(Statistic.values().length);
