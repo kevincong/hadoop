@@ -376,7 +376,7 @@ class S3ABlockOutputStream extends OutputStream implements
         // IF there is more data to upload, or no data has yet been uploaded,
         // PUT the final block
         if (hasBlock &&
-            (block.hasData() || multiPartUpload.getPartsSubmitted() == 0)) { // XXXXXXX: review this.
+            (block.hasData() || multiPartUpload.getPartsSubmitted() == 0)) {
           // send last part and set the value of isLastPart to true.
           // Necessary to set this "true" in case of client side encryption.
           uploadCurrentBlock(true);

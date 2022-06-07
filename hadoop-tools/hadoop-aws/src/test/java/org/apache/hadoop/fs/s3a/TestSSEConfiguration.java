@@ -104,7 +104,7 @@ public class TestSSEConfiguration extends Assert {
   public void testSSEKeyNull() throws Throwable {
     // test the internal logic of the test setup code
     final Configuration c = buildConf(SSE_C.getMethod(), null);
-    assertEquals("", getS3EncryptionKey(c));
+    assertEquals(null, getS3EncryptionKey(c));
 
     intercept(IOException.class, SSE_C_NO_KEY_ERROR,
         () -> getEncryptionAlgorithm(BUCKET, c));
