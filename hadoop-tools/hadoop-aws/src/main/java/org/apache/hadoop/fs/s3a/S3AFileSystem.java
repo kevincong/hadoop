@@ -322,6 +322,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities, AWS
       throws IOException {
     // setUri(name);
     // get the host; this is guaranteed to be non-null, non-empty
+    LOG.info("Using custom build hadoop-aws...");
     bucket = name.getHost();
     // LOG.debug("Initializing S3AFileSystem for {}", bucket);
     // // clone the configuration into one with propagated bucket options
@@ -338,13 +339,11 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities, AWS
       conf = ProviderUtils.excludeIncompatibleCredentialProviders(
           conf, S3AFileSystem.class);
       String arn = String.format(ARN_BUCKET_OPTION, bucket);
-      System.out.println("aaaaaarn is: " + arn);
       String configuredArn = conf.getTrimmed(arn, "");
       if (!configuredArn.isEmpty()) {
         accessPoint = ArnResource.accessPointFromArn(configuredArn);
         LOG.info("Using AccessPoint ARN \"{}\" for bucket {}", configuredArn, bucket);
         bucket = accessPoint.getFullArn();
-        System.out.println("bbbbbbbbbucket is: " + bucket);
       } else if (conf.getBoolean(AWS_S3_ACCESSPOINT_REQUIRED, false)) {
         LOG.warn("Access Point usage is required because \"{}\" is enabled," +
             " but not configured for the bucket: {}", AWS_S3_ACCESSPOINT_REQUIRED, bucket);
@@ -1622,9 +1621,6 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities, AWS
     ObjectMetadata meta = invoker.retryUntranslated("GET " + key, true,
         () -> {
           incrementStatistic(OBJECT_METADATA_REQUESTS);
-          System.out.println(request.getBucketName());
-          System.out.println(request.getKey());
-          System.out.println(request.getVersionId());
           return s3.getObjectMetadata(request);
         });
     incrementReadOperations();
